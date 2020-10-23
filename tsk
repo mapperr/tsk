@@ -66,7 +66,9 @@ get_task_field() {
 list_tasks() {
     for task_id in `get_task_id_list`; do
         title=`get_task_field $task_id 'title'`
-        echo "[$task_id] $title"
+        tags=`get_task_field $task_id 'tags'`
+        tags=`for tag in $tags; do echo -n "[$tag] "; done`
+        echo "$task_id: $tags$title"
     done
 }
 
