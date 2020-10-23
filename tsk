@@ -30,6 +30,11 @@ $name e task_id
 $name r task_id
     removes a task
 
+$name g [git_args]
+    runs 'git git_args' in the task directory
+
+$name y
+    syncs: commit changes and pull/push with git
 "
 }
 
@@ -137,6 +142,16 @@ elif [ "$cmd" = "e" ]; then
 
 elif [ "$cmd" = "r" ]; then
     remove_task $1
+
+elif [ "$cmd" = "g" ]; then
+    cd $taskdir
+    git $@
+
+elif [ "$cmd" = "y" ]; then
+    cd $taskdir
+    git status | grep 'nothing to commit' &>/dev/null
+    test $? = 1 && git add -A && git commit -am 'tsk autosync'
+    git pull && git push
 
 elif [ "$cmd" = "clean" ]; then
     rm -f $taskdir/*.md
