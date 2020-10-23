@@ -12,29 +12,33 @@ schedule:
 closed: 
 active: 
 done: 
+priority: 
 description:
 "
 
 helpmsg() {
 name=`basename $0`
 echo "
-$name l [query]
+$name ls | l [query]
     lists and searchs tasks
     
-$name a
+$name add | a
     adds a new task
 
-$name e task_id
-    open EDITOR to edit a task
+$name edit | e task_id
+    open EDITOR to edit a task, even if it not exists
 
-$name r task_id
+$name rm | r task_id
     removes a task
 
-$name g [git_args]
+$name git | g [git_args]
     runs 'git git_args' in the task directory
 
-$name y
+$name sync | y
     syncs: commit changes and pull/push with git
+
+$name clean
+    purge your tasks, use with caution
 "
 }
 
@@ -77,10 +81,6 @@ list_tasks() {
     done
 }
 
-generate_uuid() {
-    hash uuidgen &>/dev/null && uuidgen
-}
-
 is_there_a_task_with_id() {
     local task_id_to_check="$1"
     for task_id in `get_task_id_list`; do
@@ -112,11 +112,10 @@ get_new_id() {
 }
 
 add_task() {
-    tempfile="/tmp/tsk-`generate_uuid`"
-    echo "$task_template" > $tempfile
-    $EDITOR $tempfile
     newid=`get_new_id`
-    mv $tempfile $taskdir/$newid.md
+    newfile=$taskdir/$newid.md
+    echo "$task_template" > $newfile
+    $EDITOR $newfile
 }
 
 edit_task() {
@@ -126,35 +125,59 @@ edit_task() {
 
 remove_task() {
     local task_id="$1"
-    rm -f $taskdir/$task_id.md
+    task_file="$taskdir/$task_id.md"
+    if test ! -f $task_file; then
+        echo "task $task_id does not exists"
+        return
+    fi
+    title=`get_task_field $task_id 'title'`
+    echo -n "remove task $task_id [$title] (y/n)? "
+    read c
+    if test "$c" = "y" || test "$c" = "Y"; then
+        rm -f $task_file
+        echo "task $task_id removed"
+    else
+        echo "aborted"
+    fi
+}
+
+clean_tasks() {
+    echo -n "delete all tasks (y/n)? "
+    read c
+    if test "$c" = "y" || test "$c" = "Y"; then
+        rm -f $taskdir/*.md
+        echo "tasks removed"
+    else
+        echo "aborted"
+    fi
 }
 
 test -d $taskdir || mkdir -p $taskdir
 
-if [ "$cmd" = "l" ]; then
+if [ "$cmd" = "ls" ] || [ "$cmd" = "l" ]; then
     list_tasks
 
-elif [ "$cmd" = "a" ]; then
+elif [ "$cmd" = "add" ] || [ "$cmd" = "a" ]; then
     add_task
 
-elif [ "$cmd" = "e" ]; then
+elif [ "$cmd" = "edit" ] || [ "$cmd" = "e" ]; then
     edit_task $1
 
-elif [ "$cmd" = "r" ]; then
+elif [ "$cmd" = "rm" ] || [ "$cmd" = "r" ]; then
     remove_task $1
 
-elif [ "$cmd" = "g" ]; then
+elif [ "$cmd" = "git" ] || [ "$cmd" = "g" ]; then
     cd $taskdir
     git $@
 
-elif [ "$cmd" = "y" ]; then
+elif [ "$cmd" = "sync" ] || [ "$cmd" = "y" ]; then
     cd $taskdir
     git status | grep 'nothing to commit' &>/dev/null
     test $? = 1 && git add -A && git commit -am 'tsk autosync'
     git pull && git push
 
 elif [ "$cmd" = "clean" ]; then
-    rm -f $taskdir/*.md
+    clean_tasks
 
 else
     helpmsg
