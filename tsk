@@ -2,12 +2,10 @@
 
 cmd="$1"
 test -z "$cmd" || shift
-args="$@"
 
 taskdir="$HOME/.tsk"
 
-task_template=<<EOF
-title: 
+task_template="title: 
 tags: 
 due: 
 schedule: 
@@ -15,8 +13,7 @@ closed:
 active: 
 done: 
 description:
-
-EOF
+"
 
 helpmsg() {
 name=`basename $0`
@@ -36,10 +33,112 @@ $name r task_id
 "
 }
 
+is_task_list_empty() {
+    cd $taskdir
+    ls -1 *.md &>/dev/null
+    RET=$?
+    cd - &>/dev/null
+    test ! $RET = 0
+}
+
+get_task_file_list() {
+    is_task_list_empty && return
+    cd $taskdir
+    ls -1 *.md
+    cd - &>/dev/null
+}
+
+get_task_id_list() {
+    get_task_file_list | sed 's/\.md$//g'
+}
+
+get_task_id_from_filename() {
+    local filename="$1"
+    basename "$filename" | sed 's/\.md$//'
+}
+
+get_task_field() {
+    local task_id="$1"
+    local field_name="$2"
+    cat $taskdir/$task_id.md | grep "^$field_name:" | sed "s/^$field_name://"
+}
+
+list_tasks() {
+    for task_id in `get_task_id_list`; do
+        title=`get_task_field $task_id 'title'`
+        echo "[$task_id] $title"
+    done
+}
+
+generate_uuid() {
+    hash uuidgen &>/dev/null && uuidgen
+}
+
+is_there_a_task_with_id() {
+    local task_id_to_check="$1"
+    for task_id in `get_task_id_list`; do
+        if [ "$task_id" = "$task_id_to_check" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+get_first_free_id() {
+    counter=1
+    while true; do
+        if ! is_there_a_task_with_id $counter; then
+            echo $counter
+            return
+        fi
+        counter=`expr $counter + 1`
+    done
+}
+
+get_new_id() {
+    task_file_list=`get_task_file_list`
+    if test -z "$task_file_list"; then
+        echo 1
+    else
+        get_first_free_id
+    fi
+}
+
+add_task() {
+    tempfile="/tmp/tsk-`generate_uuid`"
+    echo "$task_template" > $tempfile
+    $EDITOR $tempfile
+    newid=`get_new_id`
+    mv $tempfile $taskdir/$newid.md
+}
+
+edit_task() {
+    local task_id="$1"
+    $EDITOR $taskdir/$task_id.md
+}
+
+remove_task() {
+    local task_id="$1"
+    rm -f $taskdir/$task_id.md
+}
+
 test -d $taskdir || mkdir -p $taskdir
 
 if [ "$cmd" = "l" ]; then
-    ls -1 $taskdir
+    list_tasks
+
+elif [ "$cmd" = "a" ]; then
+    add_task
+
+elif [ "$cmd" = "e" ]; then
+    edit_task $1
+
+elif [ "$cmd" = "r" ]; then
+    remove_task $1
+
+elif [ "$cmd" = "clean" ]; then
+    rm -f $taskdir/*.md
+
 else
     helpmsg
 fi
