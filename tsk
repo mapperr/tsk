@@ -1,0 +1,45 @@
+#! /bin/sh
+
+cmd="$1"
+test -z "$cmd" || shift
+args="$@"
+
+taskdir="$HOME/.tsk"
+
+task_template=<<EOF
+title: 
+tags: 
+due: 
+schedule: 
+closed: 
+active: 
+done: 
+description:
+
+EOF
+
+helpmsg() {
+name=`basename $0`
+echo "
+$name l [query]
+    lists and searchs tasks
+    
+$name a
+    adds a new task
+
+$name e task_id
+    open EDITOR to edit a task
+
+$name r task_id
+    removes a task
+
+"
+}
+
+test -d $taskdir || mkdir -p $taskdir
+
+if [ "$cmd" = "l" ]; then
+    ls -1 $taskdir
+else
+    helpmsg
+fi
