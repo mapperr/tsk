@@ -37,23 +37,33 @@ $name clean
 "
 }
 
+logd(){
+    local msg="$1"
+    test -z "$TSK_DEBUG" || echo "DEBUG - $msg" >&2
+} 
+
 is_task_list_empty() {
     cd $taskdir
-    ls -1 *.md &>/dev/null
+    ls -1 *.md >/dev/null 2>&1
     RET=$?
-    cd - &>/dev/null
+    cd - >/dev/null 2>&1
     test ! $RET = 0
 }
 
 get_task_file_list() {
     is_task_list_empty && return
+    logd "taskdir: [$taskdir]"
     cd $taskdir
-    ls -1 *.md
-    cd - &>/dev/null
+    file_list=`ls -1 *.md`
+    logd "file list: [$file_list]"
+    echo -n "$file_list"
+    cd - >/dev/null 2>&1
 }
 
 get_task_id_list() {
-    get_task_file_list | sed 's/\.md$//g' | sort -rn
+    local file_list=`get_task_file_list`
+    logd "file list for id list: [$file_list]"
+    echo -n "$file_list" | sed 's/\.md$//g' | sort -rn
 }
 
 get_task_id_from_filename() {
@@ -68,11 +78,13 @@ get_task_field() {
 }
 
 list_tasks() {
-    for task_id in `get_task_id_list`; do
+    id_list=`get_task_id_list`
+    logd "id list: [$id_list]"
+    for task_id in $id_list; do
         title=`get_task_field $task_id 'title'`
         tags=`get_task_field $task_id 'tags'`
         tags=`for tag in $tags; do echo -n "[$tag] "; done`
-        if echo -n "$task_id" |  grep '^[0-9]$' &>/dev/null; then
+        if echo -n "$task_id" |  grep '^[0-9]$' >/dev/null 2>&1; then
             echo "$task_id:  $tags$title"
         else
             echo "$task_id: $tags$title"
@@ -171,7 +183,7 @@ elif [ "$cmd" = "git" ] || [ "$cmd" = "g" ]; then
 
 elif [ "$cmd" = "sync" ] || [ "$cmd" = "y" ]; then
     cd $taskdir
-    git status | grep 'nothing to commit' &>/dev/null
+    git status | grep 'nothing to commit' >/dev/null 2>&1
     test $? = 1 && git add -A && git commit -am 'tsk autosync'
     git pull && git push
 
