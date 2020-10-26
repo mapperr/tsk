@@ -5,14 +5,9 @@ test -z "$cmd" || shift
 
 taskdir="$HOME/.tsk"
 
-task_template="title: 
-tags: 
+task_template="tags: 
+title: 
 due: 
-schedule: 
-closed: 
-active: 
-done: 
-priority: 
 description:
 "
 
@@ -58,7 +53,7 @@ get_task_file_list() {
 }
 
 get_task_id_list() {
-    get_task_file_list | sed 's/\.md$//g'
+    get_task_file_list | sed 's/\.md$//g' | sort -rn
 }
 
 get_task_id_from_filename() {
@@ -77,7 +72,11 @@ list_tasks() {
         title=`get_task_field $task_id 'title'`
         tags=`get_task_field $task_id 'tags'`
         tags=`for tag in $tags; do echo -n "[$tag] "; done`
-        echo "$task_id: $tags$title"
+        if echo -n "$task_id" |  grep '^[0-9]$' &>/dev/null; then
+            echo "$task_id:  $tags$title"
+        else
+            echo "$task_id: $tags$title"
+        fi
     done
 }
 
