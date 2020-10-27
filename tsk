@@ -172,17 +172,33 @@ remove_task() {
 move_task() {
     local from="$1"
     local to="$2"
+    local moving_id="999999"
 
+    test $from -eq $to && return
+
+    logd "moving [$from] -> [$to]"
     id_list=`get_task_id_list | sort -n`
+    cd $taskdir
     for id_ in $id_list; do
-        if test "$id_" = "$to"; then
-            cd $taskdir
-            mv $to.md $to-moving.md
+        logd "checking [$id_]"
+        if test $id_ -eq $to; then
+            logd "moving [$id_] to $moving_id"
+            mv $to.md "$moving_id.md"
+            logd "moving [$from] to [$to]"
             mv $from.md $to.md
-            mv $to-moving.md $from.md
-            cd - >/dev/null 2>&1
+
+        elif test $id_ -eq $from; then
+            continue
+
+        elif test -f "$moving_id.md"; then
+            logd "moving $moving_id to [$id_]"
+            mv $id_.md $moving_id-.md
+            mv $moving_id.md $id_.md
+            mv $moving_id-.md $moving_id.md
         fi
     done
+    cd - >/dev/null 2>&1
+    compact_ids
 }
 
 clean_tasks() {
