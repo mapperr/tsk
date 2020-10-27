@@ -5,17 +5,22 @@ test -z "$cmd" || shift
 
 taskdir="$HOME/.tsk"
 
-task_template="tags: 
+task_template='```
+tags: 
 title: 
 due: 
-description:
-"
+```
+---
+'
 
 helpmsg() {
 name=`basename $0`
 echo "
-$name ls | l [query]
-    lists and searchs tasks
+$name ls | l
+    lists tasks
+    
+$name show | s task_id
+    shows a task
     
 $name add | a
     adds a new task
@@ -39,6 +44,12 @@ $name clean
     purge your tasks, use with caution
 "
 }
+
+errmsg() {
+    local msg="$1"
+    echo "ERROR: $msg" >&2
+}
+
 
 logd(){
     local msg="$1"
@@ -212,10 +223,29 @@ clean_tasks() {
     fi
 }
 
+show_task() {
+    local task_id="$1"
+    local task_filepath="$taskdir/$task_id.md"
+
+    if test ! -r "$task_filepath"; then
+        errmsg "no task found with id [$task_id]"
+        exit 1
+    fi
+
+    if hash glow >/dev/null 2>&1; then
+        glow "$task_filepath"
+    else
+        cat "$task_filepath"
+    fi
+}
+
 test -d $taskdir || mkdir -p $taskdir
 
 if [ "$cmd" = "ls" ] || [ "$cmd" = "l" ]; then
     list_tasks
+
+elif [ "$cmd" = "show" ] || [ "$cmd" = "s" ]; then
+    show_task $1
 
 elif [ "$cmd" = "add" ] || [ "$cmd" = "a" ]; then
     add_task
