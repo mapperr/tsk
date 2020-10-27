@@ -16,8 +16,8 @@ due:
 helpmsg() {
 name=`basename $0`
 echo "
-$name ls | l
-    lists tasks
+$name ls | l [query]
+    lists tasks and grep them up
     
 $name show | s task_id
     shows a task
@@ -92,14 +92,20 @@ get_task_field() {
 }
 
 list_tasks() {
+    local query="$1"
+
     id_list=`get_task_id_list`
     logd "id list: [$id_list]"
     for task_id in $id_list; do
         title=`get_task_field $task_id 'title'`
         tags=`get_task_field $task_id 'tags'`
         tags=`for tag in $tags; do echo -n "[$tag] "; done`
+        task_filepath="$taskdir/$task_id.md"
+        if test ! -z "$query"; then
+            cat "$task_filepath" | grep "$query" >/dev/null 2>&1 || continue
+        fi
         if echo -n "$task_id" |  grep '^[0-9]$' >/dev/null 2>&1; then
-            echo "$task_id:  $tags$title"
+            echo "$task_id:  $tags$title" # <-- extra space for alignment
         else
             echo "$task_id: $tags$title"
         fi
@@ -242,7 +248,8 @@ show_task() {
 test -d $taskdir || mkdir -p $taskdir
 
 if [ "$cmd" = "ls" ] || [ "$cmd" = "l" ]; then
-    list_tasks
+    query="$@"
+    list_tasks "$query"
 
 elif [ "$cmd" = "show" ] || [ "$cmd" = "s" ]; then
     show_task $1
