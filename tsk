@@ -8,7 +8,6 @@ taskdir="$HOME/.tsk"
 task_template='```
 tags: 
 title: 
-due: 
 ```
 ---
 '
