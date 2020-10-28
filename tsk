@@ -17,28 +17,20 @@ name=`basename $0`
 echo "
 $name ls | l [query]
     lists tasks and grep them up
-    
 $name show | s task_id
     shows a task
-    
 $name add | a
     adds a new task
-
 $name edit | e task_id
     open EDITOR to edit a task, even if it not exists
-
 $name rm | r task_id
     removes a task
-
 $name mv | m task_id to_task_id
     moves a task to another id, shifting ids of other tasks
-
-$name git | g [git_args]
-    runs 'git git_args' in the task directory
-
 $name sync | y
     syncs: commit changes and pull/push with git
-
+$name git | g [git_args]
+    runs 'git git_args' in the task directory
 $name clean
     purge your tasks, use with caution
 "
