@@ -93,7 +93,7 @@ list_tasks() {
         tags=`for tag in $tags; do echo -n "[$tag] "; done`
         task_filepath="$taskdir/$task_id.md"
         if test ! -z "$query"; then
-            cat "$task_filepath" | grep "$query" >/dev/null 2>&1 || continue
+            cat "$task_filepath" | grep -i "$query" >/dev/null 2>&1 || continue
         fi
         if echo -n "$task_id" |  grep '^[0-9]$' >/dev/null 2>&1; then
             echo "$task_id:  $tags$title" # <-- extra space for alignment
