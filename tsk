@@ -27,6 +27,8 @@ $name rm | r task_id
     removes a task
 $name mv | m task_id to_task_id
     moves a task to another id, shifting ids of other tasks
+$name compact | gc
+    recompact task ids, removing holes
 $name sync | y
     syncs: commit changes and pull/push with git
 $name git | g [git_args]
@@ -134,6 +136,17 @@ get_new_id() {
     fi
 }
 
+get_next_id() {
+    task_file_list=`get_task_file_list`
+    if test -z "$task_file_list"; then
+        echo 1
+    else
+        last_id=`echo "$task_file_list" | head -n1 | sed 's/\.md//'`
+        logd "last_id: $last_id"
+        expr $last_id + 1
+    fi
+}
+
 compact_ids() {
     id_list=`get_task_id_list | sort -n`
     counter=1
@@ -148,7 +161,8 @@ compact_ids() {
 }
 
 add_task() {
-    newid=`get_new_id`
+    # newid=`get_new_id`
+    newid=`get_next_id`
     newfile=$taskdir/$newid.md
     echo "$task_template" > $newfile
     $EDITOR $newfile
@@ -171,7 +185,6 @@ remove_task() {
     read c
     if test "$c" = "y" || test "$c" = "Y"; then
         rm -f $task_file
-        compact_ids
         echo "task $task_id removed"
     else
         echo "aborted"
@@ -207,7 +220,6 @@ move_task() {
         fi
     done
     cd - >/dev/null 2>&1
-    compact_ids
 }
 
 clean_tasks() {
@@ -263,6 +275,10 @@ elif [ "$cmd" = "mv" ] || [ "$cmd" = "m" ]; then
         exit 1
     fi
     move_task $from $to
+
+elif [ "$cmd" = "compact" ] || [ "$cmd" = "gc" ]; then
+    compact_ids
+    list_tasks
 
 elif [ "$cmd" = "git" ] || [ "$cmd" = "g" ]; then
     cd $taskdir
