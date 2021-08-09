@@ -95,10 +95,11 @@ list_tasks() {
         if test ! -z "$query"; then
             cat "$task_filepath" | grep -i "$query" >/dev/null 2>&1 || continue
         fi
+        local taskline="$title - $tags"
         if echo -n "$task_id" |  grep '^[0-9]$' >/dev/null 2>&1; then
-            echo "$task_id:  $tags$title" # <-- extra space for alignment
+            echo "$task_id:  $taskline" # <-- extra space for alignment
         else
-            echo "$task_id: $tags$title"
+            echo "$task_id: $taskline"
         fi
     done
 }
