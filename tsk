@@ -4,17 +4,19 @@ cmd="$1"
 test -z "$cmd" || shift
 
 taskdir="$HOME/.tsk"
+test -z "$TSK_DIR" || taskdir="$TSK_DIR"
 
 task_template='```
-tags: 
 title: 
+tags: 
+due: 
 ```
 ---
 '
 
 helpmsg() {
-name=`basename $0`
-echo "
+	name=$(basename $0)
+	echo "
 $name ls | l [query]
     lists tasks and grep them up
 $name show | s task_id
@@ -35,264 +37,273 @@ $name git | g [git_args]
     runs 'git git_args' in the task directory
 $name clean
     purge your tasks, use with caution
+
+Options:
+
+    TSK_DIR  - set this env var to change tsk storage directory
 "
 }
 
 errmsg() {
-    local msg="$1"
-    echo "ERROR: $msg" >&2
+	local msg="$1"
+	echo "ERROR: $msg" >&2
 }
 
-
-logd(){
-    local msg="$1"
-    test -z "$TSK_DEBUG" || echo "DEBUG - $msg" >&2
-} 
+logd() {
+	local msg="$1"
+	test -z "$TSK_DEBUG" || echo "DEBUG - $msg" >&2
+}
 
 is_task_list_empty() {
-    cd $taskdir
-    ls -1 *.md >/dev/null 2>&1
-    RET=$?
-    cd - >/dev/null 2>&1
-    test ! $RET = 0
+	cd $taskdir
+	ls -1 *.md >/dev/null 2>&1
+	RET=$?
+	cd - >/dev/null 2>&1
+	test ! $RET = 0
 }
 
 get_task_file_list() {
-    is_task_list_empty && return
-    logd "taskdir: [$taskdir]"
-    cd $taskdir
-    file_list=`ls -1 *.md`
-    logd "file list: [$file_list]"
-    echo -n "$file_list"
-    cd - >/dev/null 2>&1
+	is_task_list_empty && return
+	logd "taskdir: [$taskdir]"
+	cd $taskdir
+	file_list=$(ls -1 *.md | sort -rh)
+	logd "file list: [$file_list]"
+	echo -n "$file_list"
+	cd - >/dev/null 2>&1
 }
 
 get_task_id_list() {
-    local file_list=`get_task_file_list`
-    logd "file list for id list: [$file_list]"
-    echo -n "$file_list" | sed 's/\.md$//g' | sort -rn
+	local file_list=$(get_task_file_list)
+	logd "file list for id list: [$file_list]"
+	echo -n "$file_list" | sed 's/\.md$//g' | sort -rn
 }
 
 get_task_id_from_filename() {
-    local filename="$1"
-    basename "$filename" | sed 's/\.md$//'
+	local filename="$1"
+	basename "$filename" | sed 's/\.md$//'
 }
 
 get_task_field() {
-    local task_id="$1"
-    local field_name="$2"
-    cat $taskdir/$task_id.md | grep "^$field_name:" | sed "s/^$field_name://"
+	local task_id="$1"
+	local field_name="$2"
+	cat $taskdir/$task_id.md | grep "^$field_name:" | sed "s/^$field_name://"
 }
 
 list_tasks() {
-    local query="$1"
+	local query="$1"
 
-    id_list=`get_task_id_list`
-    logd "id list: [$id_list]"
-    for task_id in $id_list; do
-        title=`get_task_field $task_id 'title'`
-        tags=`get_task_field $task_id 'tags'`
-        tags=`for tag in $tags; do echo -n "[$tag] "; done`
-        task_filepath="$taskdir/$task_id.md"
-        if test ! -z "$query"; then
-            cat "$task_filepath" | grep -i "$query" >/dev/null 2>&1 || continue
-        fi
-        local taskline="$title - $tags"
-        if echo -n "$task_id" |  grep '^[0-9]$' >/dev/null 2>&1; then
-            echo "$task_id:  $taskline" # <-- extra space for alignment
-        else
-            echo "$task_id: $taskline"
-        fi
-    done
+	id_list=$(get_task_id_list)
+	logd "id list: [$id_list]"
+	for task_id in $id_list; do
+		title=$(get_task_field $task_id 'title')
+		tags=$(get_task_field $task_id 'tags')
+		tags=$(for tag in $tags; do echo -n "[$tag] "; done)
+		task_filepath="$taskdir/$task_id.md"
+		if test ! -z "$query"; then
+			cat "$task_filepath" | grep -i "$query" >/dev/null 2>&1 || continue
+		fi
+		local taskline="$title - $tags"
+		if echo -n "$task_id" | grep '^[0-9]$' >/dev/null 2>&1; then
+			echo "$task_id:  $taskline" # <-- extra space for alignment
+		else
+			echo "$task_id: $taskline"
+		fi
+	done
 }
 
 is_there_a_task_with_id() {
-    local task_id_to_check="$1"
-    for task_id in `get_task_id_list`; do
-        if [ "$task_id" = "$task_id_to_check" ]; then
-            return 0
-        fi
-    done
-    return 1
+	local task_id_to_check="$1"
+	for task_id in $(get_task_id_list); do
+		if [ "$task_id" = "$task_id_to_check" ]; then
+			return 0
+		fi
+	done
+	return 1
 }
 
 get_first_free_id() {
-    counter=1
-    while true; do
-        if ! is_there_a_task_with_id $counter; then
-            echo $counter
-            return
-        fi
-        counter=`expr $counter + 1`
-    done
+	counter=1
+	while true; do
+		if ! is_there_a_task_with_id $counter; then
+			echo $counter
+			return
+		fi
+		counter=$(expr $counter + 1)
+	done
 }
 
 get_new_id() {
-    task_file_list=`get_task_file_list`
-    if test -z "$task_file_list"; then
-        echo 1
-    else
-        get_first_free_id
-    fi
+	task_file_list=$(get_task_file_list)
+	if test -z "$task_file_list"; then
+		echo 1
+	else
+		get_first_free_id
+	fi
 }
 
 get_next_id() {
-    task_file_list=`get_task_file_list`
-    if test -z "$task_file_list"; then
-        echo 1
-    else
-        last_id=`echo "$task_file_list" | head -n1 | sed 's/\.md//'`
-        logd "last_id: $last_id"
-        expr $last_id + 1
-    fi
+	task_file_list=$(get_task_file_list)
+	if test -z "$task_file_list"; then
+		echo 1
+	else
+		last_id=$(echo "$task_file_list" | head -n1 | sed 's/\.md//')
+		logd "last_id: $last_id"
+		expr $last_id + 1
+	fi
 }
 
 compact_ids() {
-    id_list=`get_task_id_list | sort -n`
-    counter=1
-    cd $taskdir
-    for id_ in $id_list; do
-        if [ $id_ -ne $counter ]; then
-            mv $id_.md $counter.md
-        fi
-        counter=`expr $counter + 1`
-    done
-    cd - >/dev/null 2>&1
+	id_list=$(get_task_id_list | sort -n)
+	counter=1
+	cd $taskdir
+	for id_ in $id_list; do
+		if [ $id_ -ne $counter ]; then
+			mv $id_.md $counter.md
+		fi
+		counter=$(expr $counter + 1)
+	done
+	cd - >/dev/null 2>&1
 }
 
 add_task() {
-    # newid=`get_new_id`
-    newid=`get_next_id`
-    newfile=$taskdir/$newid.md
-    echo "$task_template" > $newfile
-    $EDITOR $newfile
+	# newid=`get_new_id`
+	newid=$(get_next_id)
+	newfile=$taskdir/$newid.md
+	echo "$task_template" >$newfile
+	$EDITOR $newfile
 }
 
 edit_task() {
-    local task_id="$1"
-    $EDITOR $taskdir/$task_id.md
+	local task_id="$1"
+	$EDITOR $taskdir/$task_id.md
 }
 
 remove_task() {
-    local task_id="$1"
-    task_file="$taskdir/$task_id.md"
-    if test ! -f $task_file; then
-        echo "task $task_id does not exists"
-        return
-    fi
-    title=`get_task_field $task_id 'title'`
-    echo -n "remove task $task_id [$title] (y/n)? "
-    read c
-    if test "$c" = "y" || test "$c" = "Y"; then
-        rm -f $task_file
-        echo "task $task_id removed"
-    else
-        echo "aborted"
-    fi
+	local task_id="$1"
+	task_file="$taskdir/$task_id.md"
+	if test ! -f $task_file; then
+		echo "task $task_id does not exists"
+		return
+	fi
+	title=$(get_task_field $task_id 'title')
+	echo -n "remove task $task_id [$title] (y/n)? "
+	read c
+	if test "$c" = "y" || test "$c" = "Y"; then
+		rm -f $task_file
+		echo "task $task_id removed"
+	else
+		echo "aborted"
+	fi
 }
 
 move_task() {
-    local from="$1"
-    local to="$2"
-    local moving_id="999999"
+	local from="$1"
+	local to="$2"
 
-    test $from -eq $to && return
+	test $from -eq $to && return
 
-    logd "moving [$from] -> [$to]"
-    id_list=`get_task_id_list | sort -n`
-    cd $taskdir
-    for id_ in $id_list; do
-        logd "checking [$id_]"
-        if test $id_ -eq $to; then
-            logd "moving [$id_] to $moving_id"
-            mv $to.md "$moving_id.md"
-            logd "moving [$from] to [$to]"
-            mv $from.md $to.md
+	logd "moving [$from] -> [$to]"
 
-        elif test $id_ -eq $from; then
-            continue
+	local id_list=$(get_task_id_list)
+	cd $taskdir
 
-        elif test -f "$moving_id.md"; then
-            logd "moving $moving_id to [$id_]"
-            mv $id_.md $moving_id-.md
-            mv $moving_id.md $id_.md
-            mv $moving_id-.md $moving_id.md
-        fi
-    done
-    cd - >/dev/null 2>&1
+    if test ! -r $from.md; then
+        errmsg "no task with id $from"
+        return 1
+    fi
+
+    if ! is_there_a_task_with_id "$to"; then
+        mv $from.md $to.md
+        return 0
+    fi
+
+	for id_ in $id_list; do
+		logd "checking [$id_]"
+		if test $id_ -eq $to; then
+			logd "moving [$from] to [$to]"
+			mv "$to.md" "temp.md"
+			mv $from.md $to.md
+			mv "temp.md" "$from.md"
+            break
+		fi
+	done
+	cd - >/dev/null 2>&1
 }
 
 clean_tasks() {
-    echo -n "delete all tasks (y/n)? "
-    read c
-    if test "$c" = "y" || test "$c" = "Y"; then
-        rm -f $taskdir/*.md
-        echo "tasks removed"
-    else
-        echo "aborted"
-    fi
+	echo -n "delete all tasks (y/n)? "
+	read c
+	if test "$c" = "y" || test "$c" = "Y"; then
+		rm -f $taskdir/*.md
+		echo "tasks removed"
+	else
+		echo "aborted"
+	fi
 }
 
 show_task() {
-    local task_id="$1"
-    local task_filepath="$taskdir/$task_id.md"
+	local task_id="$1"
+	local task_filepath="$taskdir/$task_id.md"
 
-    if test ! -r "$task_filepath"; then
-        errmsg "no task found with id [$task_id]"
-        exit 1
-    fi
+	if test ! -r "$task_filepath"; then
+		errmsg "no task found with id [$task_id]"
+		exit 1
+	fi
 
-    if hash glow >/dev/null 2>&1; then
-        glow "$task_filepath"
-    else
-        cat "$task_filepath"
-    fi
+	if hash glow >/dev/null 2>&1; then
+		glow "$task_filepath"
+	else
+		cat "$task_filepath"
+	fi
 }
 
 test -d $taskdir || mkdir -p $taskdir
 
 if [ "$cmd" = "ls" ] || [ "$cmd" = "l" ]; then
-    query="$@"
-    list_tasks "$query"
+	query="$@"
+	list_tasks "$query"
 
 elif [ "$cmd" = "show" ] || [ "$cmd" = "s" ]; then
-    show_task $1
+	show_task $1
 
 elif [ "$cmd" = "add" ] || [ "$cmd" = "a" ]; then
-    add_task
+	add_task
 
 elif [ "$cmd" = "edit" ] || [ "$cmd" = "e" ]; then
-    edit_task $1
+	edit_task $1
 
 elif [ "$cmd" = "rm" ] || [ "$cmd" = "r" ]; then
-    remove_task $1
+	remove_task $1
 
 elif [ "$cmd" = "mv" ] || [ "$cmd" = "m" ]; then
-    from="$1"
-    to="$2"
-    if test -z "$from" || test -z "$to"; then
-        helpmsg
-        exit 1
-    fi
-    move_task $from $to
+	from="$1"
+	to="$2"
+	if test -z "$from" || test -z "$to"; then
+		helpmsg
+		exit 1
+	fi
+	move_task $from $to
 
 elif [ "$cmd" = "compact" ] || [ "$cmd" = "gc" ]; then
-    compact_ids
-    list_tasks
+	compact_ids
 
 elif [ "$cmd" = "git" ] || [ "$cmd" = "g" ]; then
-    cd $taskdir
-    git $@
+	cd $taskdir
+	git $@
 
 elif [ "$cmd" = "sync" ] || [ "$cmd" = "y" ]; then
-    cd $taskdir
-    git status | grep 'nothing to commit' >/dev/null 2>&1
-    test $? = 1 && git add -A && git commit -am 'tsk autosync'
-    git pull && git push
+	cd $taskdir
+	git status | grep 'nothing to commit' >/dev/null 2>&1
+	test $? = 1 && git add -A && git commit -am 'tsk autosync'
+	git pull && git push
 
 elif [ "$cmd" = "clean" ]; then
-    clean_tasks
+	clean_tasks
+
+elif [ "$cmd" = "test" ]; then
+    export task_template
+	$@
 
 else
-    helpmsg
+	helpmsg
 fi
