@@ -17,8 +17,10 @@ due:
 helpmsg() {
 	name=$(basename $0)
 	echo "
-$name ls | l [query]
-    lists tasks and grep them up
+$name ls [query] [exclude_tags_regex]
+    lists tasks and grep them up, eventually ecluding some tags
+$name l [query]
+    lists tasks and grep them up, excluding task with the 'done' tag
 $name show | s task_id
     shows a task
 $name add | a
@@ -91,17 +93,24 @@ get_task_field() {
 
 list_tasks() {
 	local query="$1"
+	local exclude_tags_regex="$2"
 
 	id_list=$(get_task_id_list)
 	logd "id list: [$id_list]"
 	for task_id in $id_list; do
 		title=$(get_task_field $task_id 'title')
 		tags=$(get_task_field $task_id 'tags')
-		tags=$(for tag in $tags; do echo -n "[$tag] "; done)
 		task_filepath="$taskdir/$task_id.md"
 		if test ! -z "$query"; then
-			cat "$task_filepath" | grep -i "$query" >/dev/null 2>&1 || continue
+			cat "$task_filepath" |
+                grep -i "$query" >/dev/null 2>&1 || continue
 		fi
+        if test ! -z "$exclude_tags_regex"; then
+            echo -n "$tags" |
+                grep -i "$exclude_tags_regex" >/dev/null 2>&1 &&
+                continue
+        fi
+		tags=$(for tag in $tags; do echo -n "[$tag] "; done)
 		local taskline="$title - $tags"
 		if echo -n "$task_id" | grep '^[0-9]$' >/dev/null 2>&1; then
 			echo "$task_id:  $taskline" # <-- extra space for alignment
@@ -259,9 +268,14 @@ show_task() {
 
 test -d $taskdir || mkdir -p $taskdir
 
-if [ "$cmd" = "ls" ] || [ "$cmd" = "l" ]; then
-	query="$@"
-	list_tasks "$query"
+if [ "$cmd" = "ls" ]; then
+	query="$1"
+	tags_exclude_regex="$2"
+	list_tasks "$query" "$tags_exclude_regex"
+
+elif [ "$cmd" = "l" ]; then
+	query="$1"
+	list_tasks "$query" "done"
 
 elif [ "$cmd" = "show" ] || [ "$cmd" = "s" ]; then
 	show_task $1
