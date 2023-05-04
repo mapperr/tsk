@@ -103,13 +103,13 @@ list_tasks() {
 		task_filepath="$taskdir/$task_id.md"
 		if test ! -z "$query"; then
 			cat "$task_filepath" |
-                grep -i "$query" >/dev/null 2>&1 || continue
+				grep -i "$query" >/dev/null 2>&1 || continue
 		fi
-        if test ! -z "$exclude_tags_regex"; then
-            echo -n "$tags" |
-                grep -i "$exclude_tags_regex" >/dev/null 2>&1 &&
-                continue
-        fi
+		if test ! -z "$exclude_tags_regex"; then
+			echo -n "$tags" |
+				grep -i "$exclude_tags_regex" >/dev/null 2>&1 &&
+				continue
+		fi
 		tags=$(for tag in $tags; do echo -n "[$tag] "; done)
 		local taskline="$title - $tags"
 		if echo -n "$task_id" | grep '^[0-9]$' >/dev/null 2>&1; then
@@ -182,9 +182,36 @@ add_task() {
 	$EDITOR $newfile
 }
 
+_edit_task() {
+	local task_id="$1"
+	local task_file=$taskdir/$task_id.md
+	if test -r "$task_file"; then
+		$EDITOR "$task_file"
+		return 0
+	fi
+	logd "task with id $task_id not found"
+	return 1
+}
+
 edit_task() {
 	local task_id="$1"
-	$EDITOR $taskdir/$task_id.md
+	if ! hash fzf 2>/dev/null; then
+		_edit_task "$task_id"
+		return $?
+	fi
+
+	local task_file=$taskdir/$task_id.md
+	if test -r "$task_file"; then
+		$EDITOR "$task_file"
+		return
+	fi
+	local task_query="$task_id"
+	local choice=$(list_tasks "$task_query" | fzf)
+	if test -z "$choice"; then
+		return 0
+	fi
+	local chosen_task_id=$(echo -n "$choice" | awk '{print $1}' | sed 's/://')
+	_edit_task "$chosen_task_id"
 }
 
 remove_task() {
@@ -216,15 +243,15 @@ move_task() {
 	local id_list=$(get_task_id_list)
 	cd $taskdir
 
-    if test ! -r $from.md; then
-        errmsg "no task with id $from"
-        return 1
-    fi
+	if test ! -r $from.md; then
+		errmsg "no task with id $from"
+		return 1
+	fi
 
-    if ! is_there_a_task_with_id "$to"; then
-        mv $from.md $to.md
-        return 0
-    fi
+	if ! is_there_a_task_with_id "$to"; then
+		mv $from.md $to.md
+		return 0
+	fi
 
 	for id_ in $id_list; do
 		logd "checking [$id_]"
@@ -233,7 +260,7 @@ move_task() {
 			mv "$to.md" "temp.md"
 			mv $from.md $to.md
 			mv "temp.md" "$from.md"
-            break
+			break
 		fi
 	done
 	cd - >/dev/null 2>&1
@@ -284,7 +311,11 @@ elif [ "$cmd" = "add" ] || [ "$cmd" = "a" ]; then
 	add_task
 
 elif [ "$cmd" = "edit" ] || [ "$cmd" = "e" ]; then
-	edit_task $1
+	if test -z "$TSK_FZF"; then
+		edit_task $1
+	else
+		edit_task_fzf $1
+	fi
 
 elif [ "$cmd" = "rm" ] || [ "$cmd" = "r" ]; then
 	remove_task $1
@@ -315,7 +346,7 @@ elif [ "$cmd" = "clean" ]; then
 	clean_tasks
 
 elif [ "$cmd" = "test" ]; then
-    export task_template
+	export task_template
 	$@
 
 else
