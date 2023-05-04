@@ -182,6 +182,19 @@ add_task() {
 	$EDITOR $newfile
 }
 
+_is_fzf_available() {
+	hash fzf 2>/dev/null
+}
+
+_pick_task_id_with_fzf() {
+	local task_query="$1"
+	_is_fzf_available || return 1
+	local choice=$(list_tasks "$task_query" | fzf)
+	test -z "$choice" && return 2
+	local chosen_task_id=$(echo -n "$choice" | awk '{print $1}' | sed 's/://')
+	echo -n $chosen_task_id
+}
+
 _edit_task() {
 	local task_id="$1"
 	local task_file=$taskdir/$task_id.md
@@ -195,7 +208,7 @@ _edit_task() {
 
 edit_task() {
 	local task_id="$1"
-	if ! hash fzf 2>/dev/null; then
+	if ! _is_fzf_available; then
 		_edit_task "$task_id"
 		return $?
 	fi
@@ -203,18 +216,15 @@ edit_task() {
 	local task_file=$taskdir/$task_id.md
 	if test -r "$task_file"; then
 		$EDITOR "$task_file"
-		return
-	fi
-	local task_query="$task_id"
-	local choice=$(list_tasks "$task_query" | fzf)
-	if test -z "$choice"; then
 		return 0
 	fi
-	local chosen_task_id=$(echo -n "$choice" | awk '{print $1}' | sed 's/://')
+	local task_query="$task_id"
+	local chosen_task_id=$(_pick_task_id_with_fzf "$task_query")
+	test -z "$chosen_task_id" && return 0
 	_edit_task "$chosen_task_id"
 }
 
-remove_task() {
+_remove_task() {
 	local task_id="$1"
 	task_file="$taskdir/$task_id.md"
 	if test ! -f $task_file; then
@@ -230,6 +240,23 @@ remove_task() {
 	else
 		echo "aborted"
 	fi
+}
+
+remove_task() {
+	local task_id="$1"
+	if ! _is_fzf_available; then
+		_remove_task "$task_id"
+		return $?
+	fi
+	local task_file=$taskdir/$task_id.md
+	if test -r "$task_file"; then
+		_remove_task "$task_id"
+		return 0
+	fi
+	local task_query="$task_id"
+	local chosen_task_id=$(_pick_task_id_with_fzf "$task_query")
+	test -z "$chosen_task_id" && return 0
+	_remove_task "$chosen_task_id"
 }
 
 move_task() {
