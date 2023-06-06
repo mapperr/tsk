@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "tsk"
+version = "0.1.0"
+description = ""
+authors = ["mapperr <mapperr@sdf.ee>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "~3.10"
+attrs = "^23.1.0"
+injector = "^0.20.1"
+typer = {extras = ["all"], version = "^0.9.0"}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.3.1"
+pyinstaller = "^5.11.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 79
+target-version = ['py310']
