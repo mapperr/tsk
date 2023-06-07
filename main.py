@@ -1,6 +1,14 @@
+import os
 from typing import List, Optional
-from typing_extensions import Annotated
+
 import typer
+from typing_extensions import Annotated
+
+user_home = os.environ["HOME"]
+config = {
+    "user_home": user_home,
+    "tsk_dir": os.environ.get("TSK_DIR", f"{user_home}/.tsk"),
+}
 
 app = typer.Typer()
 
