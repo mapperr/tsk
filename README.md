@@ -9,7 +9,39 @@ And you want to sync things with git.
 
 Clone the repo and drop or link `tsk` into your PATH.
 
-## Basic usage
+## Usage
+
+```
+
+tsk ls [query] [exclude_tags_regex]
+    lists tasks and grep them up, eventually ecluding some tags
+tsk l [query]
+    lists tasks and grep them up, excluding task with the 'done' tag
+tsk show | s task_id
+    shows a task
+tsk add | a
+    adds a new task
+tsk edit | e task_id
+    open EDITOR to edit a task, even if it not exists
+tsk rm | r task_id
+    removes a task
+tsk mv | m task_id to_task_id
+    moves a task to another id, shifting ids of other tasks
+tsk compact | gc
+    recompact task ids, removing holes
+tsk sync | y
+    syncs: commit changes and pull/push with git
+tsk git | g [git_args]
+    runs 'git git_args' in the task directory
+tsk clean
+    purge your tasks, use with caution
+
+Options:
+
+    TSK_DIR  - set this env var to change tsk storage directory
+```
+
+## Examples
 
 List tasks with `tsk l`.
 
@@ -22,15 +54,3 @@ Again, it opens your editor.
 Remove a task with `tsk r task_id`
 
 Run `tsk` with no args for a help message.
-
-## Sync
-
-With `tsk g git_args` you can run git commands into the task dir.
-
-Soo, run `tsk g init` and you have a git repo.
-
-If you add a remote you can sync it with `tsk y`. 
-It commits all your eventual pending changes and do a pull/push.
-
-The default task dir is `$HOME/.tsk`.
-
