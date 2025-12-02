@@ -11,21 +11,27 @@ usage() {
     printf "Usage [v$version]:
     $s l [filters]
         shows the task list, eventually filtered
+        you can pipe in the result of another $s l to narrow the search
+    $s ll [filters]
+        shows the task list, eventually filtered searching in tasks body
+        you can pipe in the result of another $s l to narrow the search
 
     $s a <title and tags>
         adds a new task, you can pipe in the task body, e.g.:
         echo 'develop some web application' | $s a Do something #dev #due:tomorrow
 
     $s d [filters]
-        deletes a task
+        deletes tasks
+        you can pipe in a list of task filtered from $s l: this way there is NO CONFIRMATION!
 
     $s e [filters]
         opens a task in the \$EDITOR
         if no filter is passed, then opens the last created task
         you can pipe in one task filtered from $s l
 
-    $s c [filters]
-        prints the tasks to stdout
+    $s s [filters]
+        shows the tasks to stdout
+        you can pipe in a list of task filtered from $s l
 
     $s g [git cmds/args]
         executes git commands in the tsk directory, e.g.: tsk g pull
@@ -88,6 +94,11 @@ list_tasks() {
     [ ! -t 0 ] && _print_task_list "$(cat | grep "${*:-.}" | _get_abs_tskfile_list)"
     [ -t 0 ] && _print_task_list "$tskdir/*.$tskfile_ext" | grep "${*:-.}"
 }
+search_tasks() {
+    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
+    [ ! -t 0 ] && _print_task_list "$(cat | _get_abs_tskfile_list | xargs -I% grep -l "${*:-.}" % | sort -u)"
+    [ -t 0 ] && _print_task_list "$(for f in "$tskdir/"*".$tskfile_ext"; do echo "$f"; done | xargs -I% grep -l "${*:-.}" % | sort -u)"
+}
 edit_task() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
     if [ -z "$1" ] && [ -t 0 ]; then $EDITOR "$tskdir/$(list_tasks | tail -n1 | cut -d: -f1).$tskfile_ext"; return $?; fi
@@ -125,6 +136,7 @@ main() {
     cmd="$1"; shift
     case $cmd in
         l) list_tasks "$@";;
+        ll) search_tasks "$@";;
         a) add_task "$@";;
         d) del_tasks "$@";;
         t) tag_tasks "$@";;
