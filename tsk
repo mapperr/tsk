@@ -91,13 +91,13 @@ _print_task_list() {
 }
 list_tasks() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
-    [ ! -t 0 ] && _print_task_list "$(cat | grep "${*:-.}" | _get_abs_tskfile_list)"
-    [ -t 0 ] && _print_task_list "$tskdir/*.$tskfile_ext" | grep "${*:-.}"
+    [ ! -t 0 ] && _print_task_list "$(cat | grep -i "${*:-.}" | _get_abs_tskfile_list)"
+    [ -t 0 ] && _print_task_list "$tskdir/*.$tskfile_ext" | grep -i "${*:-.}"
 }
 search_tasks() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
-    [ ! -t 0 ] && _print_task_list "$(cat | _get_abs_tskfile_list | xargs -I% grep -l "${*:-.}" % | sort -u)"
-    [ -t 0 ] && _print_task_list "$(for f in "$tskdir/"*".$tskfile_ext"; do echo "$f"; done | xargs -I% grep -l "${*:-.}" % | sort -u)"
+    [ ! -t 0 ] && _print_task_list "$(cat | _get_abs_tskfile_list | xargs -I% grep -il "${*:-.}" % | sort -u)"
+    [ -t 0 ] && _print_task_list "$(for f in "$tskdir/"*".$tskfile_ext"; do echo "$f"; done | xargs -I% grep -il "${*:-.}" % | sort -u)"
 }
 _print_task() { pcmd=cat; command -v mdcat>/dev/null && pcmd=mdcat; echo; echo "$(basename "$1"):"; $pcmd "$1"; echo;}
 show_tasks() {
@@ -122,6 +122,7 @@ del_tasks() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
     [ ! -t 0 ] && tasklist="$(cat | list_tasks "$*")"
     [ -t 0 ] && tasklist="$(list_tasks "$*")"
+    [ -z "$tasklist" ] && _err "no task found"
     tskfiles="$(echo "$tasklist" | _get_abs_tskfile_list)"
     printf "\n%s\n\n" "$tasklist"
     if [ -t 0 ]; then
