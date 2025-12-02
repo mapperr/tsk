@@ -84,9 +84,9 @@ _print_task_list() {
     list="$1"
     { for t in $list; do
         [ -f "$t" ] || continue
-        title="$(head -n1 "$t")"
+        { title="$(head -n1 "$t")"; done_mark=''
         [ -z "$TSK_UNFRIENDLY" ] && printf "$title" | grep "#$TSK_DONE_TAG\b" >/dev/null && done_mark="✓"
-        echo "$(basename "${t%.$tskfile_ext}"): $done_mark${done_mark+ }$title" & done; wait
+        echo "$(basename "${t%.$tskfile_ext}"): $done_mark${done_mark+ }$title"; } & done; wait
     } | sort -n
 }
 list_tasks() {
