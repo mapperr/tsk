@@ -1,381 +1,163 @@
 #! /bin/sh
+version="0.1.0"
+tskdir="${TSK_DIR:-$HOME/.tsk}"
+editor="${EDITOR:-vi}"
+tmpdir="$TMPDIR:-/tmp"
+tskfile_ext="tsk.md"
+TSK_DONE_TAG=${TSK_DONE_TAG:-done}
 
-cmd="$1"
-test -z "$cmd" || shift
+usage() {
+    s="$(basename $0)"
+    printf "Usage [v$version]:
+    $s l [filters]
+        shows the task list, eventually filtered
+        you can pipe in the result of another $s l to narrow the search
+    $s ll [filters]
+        shows the task list, eventually filtered searching in tasks body
+        you can pipe in the result of another $s l to narrow the search
 
-taskdir="$HOME/.tsk"
-test -z "$TSK_DIR" || taskdir="$TSK_DIR"
+    $s a <title and tags>
+        adds a new task, you can pipe in the task body, e.g.:
+        echo 'develop some web application' | $s a Do something #dev #due:tomorrow
 
-task_template='```
-title: 
-tags: 
-due: 
-```
----
-'
+    $s d [filters]
+        deletes tasks
+        you can pipe in a list of task filtered from $s l: this way there is NO CONFIRMATION!
 
-helpmsg() {
-	name=$(basename $0)
-	echo "
-$name ls [query] [exclude_tags_regex]
-    lists tasks and grep them up, eventually ecluding some tags
-$name l [query]
-    lists tasks and grep them up, excluding task with the 'done' tag
-$name show | s task_id
-    shows a task
-$name add | a
-    adds a new task
-$name edit | e task_id
-    open EDITOR to edit a task, even if it not exists
-$name rm | r task_id
-    removes a task
-$name mv | m task_id to_task_id
-    moves a task to another id, shifting ids of other tasks
-$name compact | gc
-    recompact task ids, removing holes
-$name sync | y
-    syncs: commit changes and pull/push with git
-$name git | g [git_args]
-    runs 'git git_args' in the task directory
-$name clean
-    purge your tasks, use with caution
+    $s e [filters]
+        opens a task in the \$EDITOR
+        if no filter is passed, then opens the last created task
+        you can pipe in one task filtered from $s l
 
-Options:
+    $s s [filters]
+        shows the tasks to stdout
+        you can pipe in a list of task filtered from $s l
 
-    TSK_DIR  - set this env var to change tsk storage directory
+    $s g [git cmds/args]
+        executes git commands in the tsk directory, e.g.: tsk g pull
+    $s y [commit msg]
+        executes git add, commit -m 'commit msg' (or 'sync'), pull and push in the tsk directory
+    $s h
+        shows extended help
 "
 }
+helpmsg() {
+    usage; echo
+    printf "tsk files:
+    a tsk file contains the task title and task tags in the first line,
+    and the task body from the second line on.
+    A tsk file is named with the timestamp the task was created and the task id.
 
-errmsg() {
-	local msg="$1"
-	echo "ERROR: $msg" >&2
+tags:
+    tasks can be tagged. A 'tag' is a string in the form of #tag or #tag:value
+    where tag and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces.
+    those tags will help search and task categorization or can be used by external integrations.
+
+env vars:
+    - TSK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: ${TSK_DEBUG:-unset}]
+    - TSK_DIR: the directory containing your tasks [default: \$HOME/.tsk, cur: $tskdir]
+    - TSK_DONE_TAG: the tasks tagged with the TSK_DONE tag are excluded from lists, unless you explicitly include them [default: #done , cur: $TSK_DONE_TAG]
+"
 }
-
-logd() {
-	local msg="$1"
-	test -z "$TSK_DEBUG" || echo "DEBUG - $msg" >&2
+_err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
+_warn() { printf "%s: warn: %s\n" "$(basename "$0")" "$1" >&2; }
+_info() { printf "%s: %s\n" "$(basename "$0")" "$1" >&2; }
+_dbg() { [ "$TRK_DEBUG" ] && printf "%s: debug: %s\n" "$(basename "$0")" "$1" >&2; return 0; }
+# $1 = number of chars to receive, $2 = filter for the chars
+_rand_chars() { LC_ALL=C tr -dc "$2" </dev/urandom | dd ibs=1 obs=1 count="$1" 2>/dev/null; }
+_mktemp() {
+    tmpdir=/dev/shm
+    [ -w /dev/shm ] || tmpdir=${TMPDIR:-/tmp}
+    tmpfile=$tmpdir/sec.$(_rand_chars 16 'A-Za-z0-9') || _err "couldn't generate random characters"
+    mkdir -p "$(dirname "$tmpfile")" || _err "couldn't create temp dir"
+    touch "$tmpfile" || _err "couldn't create temp file"
+    printf "%s" "$tmpfile"
 }
-
-is_task_list_empty() {
-	cd $taskdir
-	ls -1 *.md >/dev/null 2>&1
-	RET=$?
-	cd - >/dev/null 2>&1
-	test ! $RET = 0
+_epoch() { date '+%s'; }
+_now() { date '+%Y%m%d%H%M%S'; }
+_today() { date '+%Y-%m-%d'; }
+_validate_date() { date -d "$(printf "$1")" >/dev/null 2>&1;}
+_create_task_filename() { printf '%s-%s.%s' "$(_now)" "$(_rand_chars 16 'A-Za-z0-9')" "$tskfile_ext";}
+_no_tasks() { ! ls $tskdir/*."$tskfile_ext" >/dev/null 2>&1;}
+_get_abs_tskfile_list() { [ ! -t 0 ] && set -- "$(cat)"; echo "$1" | cut -d: -f1 | xargs -I% echo "$tskdir/%.$tskfile_ext";}
+_print_task_list() {
+    list="$1"
+    { for t in $list; do
+        [ -f "$t" ] || continue
+        title="$(head -n1 "$t")"
+        [ -z "$TSK_UNFRIENDLY" ] && printf "$title" | grep "#$TSK_DONE_TAG\b" >/dev/null && done_mark="✓"
+        echo "$(basename "${t%.$tskfile_ext}"): $done_mark${done_mark+ }$title" & done; wait
+    } | sort -n
 }
-
-get_task_file_list() {
-	is_task_list_empty && return
-	logd "taskdir: [$taskdir]"
-	cd $taskdir
-	file_list=$(ls -1 *.md | sort -rh)
-	logd "file list: [$file_list]"
-	echo -n "$file_list"
-	cd - >/dev/null 2>&1
-}
-
-get_task_id_list() {
-	local file_list=$(get_task_file_list)
-	logd "file list for id list: [$file_list]"
-	echo -n "$file_list" | sed 's/\.md$//g' | sort -rn
-}
-
-get_task_id_from_filename() {
-	local filename="$1"
-	basename "$filename" | sed 's/\.md$//'
-}
-
-get_task_field() {
-	local task_id="$1"
-	local field_name="$2"
-	cat $taskdir/$task_id.md | grep "^$field_name:" | sed "s/^$field_name://"
-}
-
 list_tasks() {
-	local query="$1"
-	local exclude_tags_regex="$2"
-
-	id_list=$(get_task_id_list)
-	logd "id list: [$id_list]"
-	for task_id in $id_list; do
-		title=$(get_task_field $task_id 'title')
-		tags=$(get_task_field $task_id 'tags')
-		task_filepath="$taskdir/$task_id.md"
-		if test ! -z "$query"; then
-			cat "$task_filepath" |
-				grep -i "$query" >/dev/null 2>&1 || continue
-		fi
-		if test ! -z "$exclude_tags_regex"; then
-			echo -n "$tags" |
-				grep -i "$exclude_tags_regex" >/dev/null 2>&1 &&
-				continue
-		fi
-		tags=$(for tag in $tags; do echo -n "[$tag] "; done)
-		local taskline="$title - $tags"
-		if echo -n "$task_id" | grep '^[0-9]$' >/dev/null 2>&1; then
-			echo "$task_id:  $taskline" # <-- extra space for alignment
-		else
-			echo "$task_id: $taskline"
-		fi
-	done
+    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
+    [ ! -t 0 ] && _print_task_list "$(cat | grep "${*:-.}" | _get_abs_tskfile_list)"
+    [ -t 0 ] && _print_task_list "$tskdir/*.$tskfile_ext" | grep "${*:-.}"
 }
-
-is_there_a_task_with_id() {
-	local task_id_to_check="$1"
-	for task_id in $(get_task_id_list); do
-		if [ "$task_id" = "$task_id_to_check" ]; then
-			return 0
-		fi
-	done
-	return 1
+search_tasks() {
+    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
+    [ ! -t 0 ] && _print_task_list "$(cat | _get_abs_tskfile_list | xargs -I% grep -l "${*:-.}" % | sort -u)"
+    [ -t 0 ] && _print_task_list "$(for f in "$tskdir/"*".$tskfile_ext"; do echo "$f"; done | xargs -I% grep -l "${*:-.}" % | sort -u)"
 }
-
-get_first_free_id() {
-	counter=1
-	while true; do
-		if ! is_there_a_task_with_id $counter; then
-			echo $counter
-			return
-		fi
-		counter=$(expr $counter + 1)
-	done
+_print_task() { pcmd=cat; command -v mdcat>/dev/null && pcmd=mdcat; echo; echo "$(basename "$1"):"; $pcmd "$1"; echo;}
+show_tasks() {
+    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
+    if [ -z "$1" ] && [ -t 0 ]; then _print_task "$tskdir/$(list_tasks | tail -n1 | cut -d: -f1).$tskfile_ext"; return $?; fi
+    [ ! -t 0 ] && tasklist="$(cat | list_tasks "$*")"
+    [ -t 0 ] && tasklist="$(list_tasks "$*")"
+    tskfiles="$(echo "$tasklist" | _get_abs_tskfile_list)"
+    for t in $tskfiles; do _print_task "$t"; echo "---"; done
 }
-
-get_new_id() {
-	task_file_list=$(get_task_file_list)
-	if test -z "$task_file_list"; then
-		echo 1
-	else
-		get_first_free_id
-	fi
-}
-
-get_next_id() {
-	task_file_list=$(get_task_file_list)
-	if test -z "$task_file_list"; then
-		echo 1
-	else
-		last_id=$(echo "$task_file_list" | head -n1 | sed 's/\.md//')
-		logd "last_id: $last_id"
-		expr $last_id + 1
-	fi
-}
-
-compact_ids() {
-	id_list=$(get_task_id_list | sort -n)
-	counter=1
-	cd $taskdir
-	for id_ in $id_list; do
-		if [ $id_ -ne $counter ]; then
-			mv $id_.md $counter.md
-		fi
-		counter=$(expr $counter + 1)
-	done
-	cd - >/dev/null 2>&1
-}
-
-add_task() {
-	# newid=`get_new_id`
-	newid=$(get_next_id)
-	newfile=$taskdir/$newid.md
-	echo "$task_template" >$newfile
-	$EDITOR $newfile
-}
-
-_is_fzf_available() {
-	hash fzf 2>/dev/null
-}
-
-_pick_task_id_with_fzf() {
-	local task_query="$1"
-	_is_fzf_available || return 1
-	local choice=$(list_tasks "$task_query" | fzf)
-	test -z "$choice" && return 2
-	local chosen_task_id=$(echo -n "$choice" | awk '{print $1}' | sed 's/://')
-	echo -n $chosen_task_id
-}
-
-_edit_task() {
-	local task_id="$1"
-	local task_file=$taskdir/$task_id.md
-	if test -r "$task_file"; then
-		$EDITOR "$task_file"
-		return 0
-	fi
-	logd "task with id $task_id not found"
-	return 1
-}
-
 edit_task() {
-	local task_id="$1"
-	if ! _is_fzf_available; then
-		_edit_task "$task_id"
-		return $?
-	fi
-
-	local task_file=$taskdir/$task_id.md
-	if test -r "$task_file"; then
-		$EDITOR "$task_file"
-		return 0
-	fi
-	local task_query="$task_id"
-	local chosen_task_id=$(_pick_task_id_with_fzf "$task_query")
-	test -z "$chosen_task_id" && return 0
-	_edit_task "$chosen_task_id"
+    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
+    if [ -z "$1" ] && [ -t 0 ]; then $EDITOR "$tskdir/$(list_tasks | tail -n1 | cut -d: -f1).$tskfile_ext"; return $?; fi
+    [ ! -t 0 ] && tasklist="$(cat | list_tasks "$*")"
+    [ -t 0 ] && tasklist="$(list_tasks "$*")"
+    ( [ -z "$tasklist" ] || [ "$(echo "$tasklist" | wc -l)" -ne 1 ] ) &&
+        _warn "task list is:" && echo "$tasklist" 1>&2 && _err "filter the list to obtain only 1 task"
+    tskfile="$(echo "$tasklist" | _get_abs_tskfile_list)"
+    $EDITOR "$tskfile"
 }
-
-_remove_task() {
-	local task_id="$1"
-	task_file="$taskdir/$task_id.md"
-	if test ! -f $task_file; then
-		echo "task $task_id does not exists"
-		return
-	fi
-	title=$(get_task_field $task_id 'title')
-	echo -n "remove task $task_id [$title] (y/n)? "
-	read c
-	if test "$c" = "y" || test "$c" = "Y"; then
-		rm -f $task_file
-		echo "task $task_id removed"
-	else
-		echo "aborted"
-	fi
+del_tasks() {
+    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
+    [ ! -t 0 ] && tasklist="$(cat | list_tasks "$*")"
+    [ -t 0 ] && tasklist="$(list_tasks "$*")"
+    tskfiles="$(echo "$tasklist" | _get_abs_tskfile_list)"
+    printf "\n%s\n\n" "$tasklist"
+    if [ -t 0 ]; then
+        printf "delete tasks (y/n)? "
+        read -r c
+        [ "$c" = "y" ] || return 1
+    fi
+    rm -f $tskfiles
+    _info "deleted"
 }
-
-remove_task() {
-	local task_id="$1"
-	if ! _is_fzf_available; then
-		_remove_task "$task_id"
-		return $?
-	fi
-	local task_file=$taskdir/$task_id.md
-	if test -r "$task_file"; then
-		_remove_task "$task_id"
-		return 0
-	fi
-	local task_query="$task_id"
-	local chosen_task_id=$(_pick_task_id_with_fzf "$task_query")
-	test -z "$chosen_task_id" && return 0
-	_remove_task "$chosen_task_id"
+add_task() {
+    [ -z "$1" ] && usage && return 1
+    body=''; [ ! -t 0 ] && body="$(cat)"
+    title="$*"
+    tskfile="$(_create_task_filename)"
+    echo "$title" >"$tskdir/$tskfile"
+    echo "" >>"$tskdir/$tskfile"
+    echo "$body" >>"$tskdir/$tskfile"
+    _info "created task: $title [$tskfile]"
 }
-
-move_task() {
-	local from="$1"
-	local to="$2"
-
-	test $from -eq $to && return
-
-	logd "moving [$from] -> [$to]"
-
-	local id_list=$(get_task_id_list)
-	cd $taskdir
-
-	if test ! -r $from.md; then
-		errmsg "no task with id $from"
-		return 1
-	fi
-
-	if ! is_there_a_task_with_id "$to"; then
-		mv $from.md $to.md
-		return 0
-	fi
-
-	for id_ in $id_list; do
-		logd "checking [$id_]"
-		if test $id_ -eq $to; then
-			logd "moving [$from] to [$to]"
-			mv "$to.md" "temp.md"
-			mv $from.md $to.md
-			mv "temp.md" "$from.md"
-			break
-		fi
-	done
-	cd - >/dev/null 2>&1
+main() {
+    cmd="$1"; shift
+    case $cmd in
+        l) list_tasks "$@";;
+        ll) search_tasks "$@";;
+        a) add_task "$@";;
+        d) del_tasks "$@";;
+        t) tag_tasks "$@";;
+        e) edit_task "$@";;
+        s) show_tasks "$@";;
+        h) helpmsg && exit 0;;
+        g) cd "$tskdir" && git "$@";;
+        y) cd "$tskdir" && git add -A && git commit -m "${*:-sync}" && git pull && git push;;
+        run) "$@";;
+        *) if command -v $scriptname-"$cmd">/dev/null; then $scriptname-"$cmd" "$@"; else usage; exit 0; fi;
+    esac
 }
-
-clean_tasks() {
-	echo -n "delete all tasks (y/n)? "
-	read c
-	if test "$c" = "y" || test "$c" = "Y"; then
-		rm -f $taskdir/*.md
-		echo "tasks removed"
-	else
-		echo "aborted"
-	fi
-}
-
-show_task() {
-	local task_id="$1"
-	local task_filepath="$taskdir/$task_id.md"
-
-	if test ! -r "$task_filepath"; then
-		errmsg "no task found with id [$task_id]"
-		exit 1
-	fi
-
-	if hash glow >/dev/null 2>&1; then
-		glow "$task_filepath"
-	else
-		cat "$task_filepath"
-	fi
-}
-
-test -d $taskdir || mkdir -p $taskdir
-
-if [ "$cmd" = "ls" ]; then
-	query="$1"
-	tags_exclude_regex="$2"
-	list_tasks "$query" "$tags_exclude_regex"
-
-elif [ "$cmd" = "l" ]; then
-	query="$1"
-	list_tasks "$query" "done"
-
-elif [ "$cmd" = "show" ] || [ "$cmd" = "s" ]; then
-	show_task $1
-
-elif [ "$cmd" = "add" ] || [ "$cmd" = "a" ]; then
-	add_task
-
-elif [ "$cmd" = "edit" ] || [ "$cmd" = "e" ]; then
-	if test -z "$TSK_FZF"; then
-		edit_task $1
-	else
-		edit_task_fzf $1
-	fi
-
-elif [ "$cmd" = "rm" ] || [ "$cmd" = "r" ]; then
-	remove_task $1
-
-elif [ "$cmd" = "mv" ] || [ "$cmd" = "m" ]; then
-	from="$1"
-	to="$2"
-	if test -z "$from" || test -z "$to"; then
-		helpmsg
-		exit 1
-	fi
-	move_task $from $to
-
-elif [ "$cmd" = "compact" ] || [ "$cmd" = "gc" ]; then
-	compact_ids
-
-elif [ "$cmd" = "git" ] || [ "$cmd" = "g" ]; then
-	cd $taskdir
-	git $@
-
-elif [ "$cmd" = "sync" ] || [ "$cmd" = "y" ]; then
-	cd $taskdir
-	git status | grep 'nothing to commit' >/dev/null 2>&1
-	test $? = 1 && git add -A && git commit -am 'tsk autosync'
-	git pull && git push
-
-elif [ "$cmd" = "clean" ]; then
-	clean_tasks
-
-elif [ "$cmd" = "test" ]; then
-	export task_template
-	$@
-
-else
-	helpmsg
-fi
+scriptname=$(basename $0)
+[ "$1" ] || { usage; exit 0; } && main "$@"

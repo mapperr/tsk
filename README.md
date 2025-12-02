@@ -12,33 +12,52 @@ Clone the repo and drop or link `tsk` into your PATH.
 ## Usage
 
 ```
+Usage [v0.1.0]:
+    tsk l [filters]
+        shows the task list, eventually filtered
+        you can pipe in the result of another tsk l to narrow the search
+    tsk ll [filters]
+        shows the task list, eventually filtered searching in tasks body
+        you can pipe in the result of another tsk l to narrow the search
 
-tsk ls [query] [exclude_tags_regex]
-    lists tasks and grep them up, eventually ecluding some tags
-tsk l [query]
-    lists tasks and grep them up, excluding task with the 'done' tag
-tsk show | s task_id
-    shows a task
-tsk add | a
-    adds a new task
-tsk edit | e task_id
-    open EDITOR to edit a task, even if it not exists
-tsk rm | r task_id
-    removes a task
-tsk mv | m task_id to_task_id
-    moves a task to another id, shifting ids of other tasks
-tsk compact | gc
-    recompact task ids, removing holes
-tsk sync | y
-    syncs: commit changes and pull/push with git
-tsk git | g [git_args]
-    runs 'git git_args' in the task directory
-tsk clean
-    purge your tasks, use with caution
+    tsk a <title and tags>
+        adds a new task, you can pipe in the task body, e.g.:
+        echo 'develop some web application' | tsk a Do something #dev #due:tomorrow
 
-Options:
+    tsk d [filters]
+        deletes tasks
+        you can pipe in a list of task filtered from tsk l: this way there is NO CONFIRMATION!
 
-    TSK_DIR  - set this env var to change tsk storage directory
+    tsk e [filters]
+        opens a task in the $EDITOR
+        if no filter is passed, then opens the last created task
+        you can pipe in one task filtered from tsk l
+
+    tsk s [filters]
+        shows the tasks to stdout
+        you can pipe in a list of task filtered from tsk l
+
+    tsk g [git cmds/args]
+        executes git commands in the tsk directory, e.g.: tsk g pull
+    tsk y [commit msg]
+        executes git add, commit -m 'commit msg' (or 'sync'), pull and push in the tsk directory
+    tsk h
+        shows extended help
+
+tsk files:
+    a tsk file contains the task title and task tags in the first line,
+    and the task body from the second line on.
+    A tsk file is named with the timestamp the task was created and the task id.
+
+tags:
+    tasks can be tagged. A 'tag' is a string in the form of #tag or #tag:value
+    where tag and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces.
+    those tags will help search and task categorization or can be used by external integrations.
+
+env vars:
+    - TSK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: unset]
+    - TSK_DIR: the directory containing your tasks [default: $HOME/.tsk, cur: /home/mapperr/src/git.sr.ht/~mapperr/tasks]
+    - TSK_DONE_TAG: the tasks tagged with the TSK_DONE tag are excluded from lists, unless you explicitly include them [default: #done , cur: done]
 ```
 
 ## Examples
