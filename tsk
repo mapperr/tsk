@@ -172,7 +172,7 @@ del_tasks() {
 add_task() {
     [ -z "$1" ] && usage && return 1
     body=''; [ ! -t 0 ] && body="$(cat)"
-    title="$*"
+    title="$(printf "$*" | sed '/ \{1,\}/d')"
     tskfile="$(_create_task_filename)"
     echo "$title" >"$tskdir/$tskfile"
     echo "" >>"$tskdir/$tskfile"
