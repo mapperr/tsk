@@ -56,7 +56,7 @@ tags:
 env vars:
     - TSK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: ${TSK_DEBUG:-unset}]
     - TSK_DIR: the directory containing your tasks [default: \$HOME/.tsk, cur: $tskdir]
-    - TSK_DONE_TAG: the tasks tagged with the TSK_DONE tag are excluded from lists, unless you explicitly include them [default: #done , cur: $TSK_DONE_TAG]
+    - TSK_DONE_TAG: the tasks tagged with the TSK_DONE_TAG tag are treated in special way in reports, [default: #done , cur: $TSK_DONE_TAG]
 "
 }
 _err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
@@ -85,7 +85,6 @@ _print_task_list() {
     { for t in $list; do
         [ -f "$t" ] || continue
         { title="$(head -n1 "$t")"; done_mark=''
-        [ -z "$TSK_UNFRIENDLY" ] && printf "$title" | grep "#$TSK_DONE_TAG\b" >/dev/null && done_mark="✓"
         echo "$(basename "${t%.$tskfile_ext}"): $done_mark${done_mark+ }$title"; } & done; wait
     } | sort -n
 }
@@ -99,8 +98,31 @@ search_tasks() {
     [ ! -t 0 ] && _print_task_list "$(cat | _get_abs_tskfile_list | xargs -I% grep -il "${*:-.}" % | sort -u)"
     [ -t 0 ] && _print_task_list "$(for f in "$tskdir/"*".$tskfile_ext"; do echo "$f"; done | xargs -I% grep -il "${*:-.}" % | sort -u)"
 }
-_print_task() { pcmd=cat; command -v mdcat>/dev/null && pcmd=mdcat; echo; echo "$(basename "$1"):"; $pcmd "$1"; echo;}
+_get_title() { tskfile="$1";l1="$(head -n1 "$tskfile")"; ! printf "$l1" | grep '#'>/dev/null && printf "$l1" && return 0; printf "$l1"|cut -d'#' -f1;}
+_get_tags() { tskfile="$1";l1="$(head -n1 "$tskfile")"; ! printf "$l1" | grep '#'>/dev/null && printf "" && return 0; printf '#'; printf "$l1"|cut -d'#' -f2-;}
+_print_task() {
+    title="$(_get_title "$1")"
+    tags="$(_get_tags "$1")"
+    pcmd=cat; command -v mdcat>/dev/null && pcmd=mdcat
+    {
+        echo "# $title"
+        [ -n "$tags" ] && echo "\`$tags\`"
+        cat "$1" | sed '1d'
+    } | $pcmd
+}
 show_tasks() {
+    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
+    [ -z "$1" ] && [ -t 0 ] && return 0
+    [ ! -t 0 ] && tasklist="$(cat | list_tasks "$*")"
+    [ -t 0 ] && tasklist="$(list_tasks "$*")"
+    tskfiles="$(echo "$tasklist" | _get_abs_tskfile_list)"
+    for t in $tskfiles; do
+        echo "[$(basename "${t%.$tskfile_ext}")]"
+        _print_task "$t"
+        echo "___" >&2
+    done
+}
+tag_tasks() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
     if [ -z "$1" ] && [ -t 0 ]; then _print_task "$tskdir/$(list_tasks | tail -n1 | cut -d: -f1).$tskfile_ext"; return $?; fi
     [ ! -t 0 ] && tasklist="$(cat | list_tasks "$*")"
