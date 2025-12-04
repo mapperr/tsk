@@ -1,13 +1,17 @@
 # tsk
 
-A cli task management tool when you don't need 
-all the awesomeness of [taskwarrior](https://taskwarrior.org).
+A cli task management tool.
 
-And you want to sync things with git.
+`tsk` only concepts are *tasks* and *tags*.
+
+Tasks are markdown files which have title and tags in the first line.
+The rest of the file is the task body.
+
+Thas's it.
 
 ## Installation
 
-Clone the repo and drop or link `tsk` into your PATH.
+Clone the repo and copy or link `tsk` into your PATH.
 
 ## Usage
 
@@ -60,16 +64,6 @@ env vars:
     - TSK_DONE_TAG: the tasks tagged with the TSK_DONE tag are excluded from lists, unless you explicitly include them [default: #done , cur: done]
 ```
 
-## Examples
+## References and related projects
 
-List tasks with `tsk l`.
-
-Add a task with `tsk a`.
-It opens your editor.
-
-Edit a task with `tsk e task_id`.
-Again, it opens your editor.
-
-Remove a task with `tsk r task_id`
-
-Run `tsk` with no args for a help message.
+- https://taskwarrior.org : an awesome task management tool for the cli
