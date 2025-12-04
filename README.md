@@ -16,7 +16,7 @@ Clone the repo and copy or link `tsk` into your PATH.
 ## Usage
 
 ```
-Usage [v0.1.0]:
+Usage [v0.3.0]:
     tsk l [filters]
         shows the task list, eventually filtered
         you can pipe in the result of another tsk l to narrow the search
@@ -40,6 +40,11 @@ Usage [v0.1.0]:
     tsk s [filters]
         shows the tasks to stdout
         you can pipe in a list of task filtered from tsk l
+
+    tsk t <tags changes>...
+        changes tags to the list of tasks piped in
+        it works on the task list you pipe in from tsk l
+        the tag change syntax is '-tag' to remove a tag and '+tag' to add it
 
     tsk g [git cmds/args]
         executes git commands in the tsk directory, e.g.: tsk g pull
