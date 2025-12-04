@@ -62,8 +62,6 @@ tags:
     tasks can be tagged. A 'tag' is a string in the form of #value or #key:value
     where key and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces.
     those tags will help searching, task categorization, reports or can be used by external integrations.
-    among them there are special tags that are considered in task reports (you can change them with env vars):
-    - #done [env: TSK_TAG_DONE , cur: ]
 
 env vars:
     - TSK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: unset]
