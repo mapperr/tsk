@@ -136,6 +136,7 @@ tag_tasks() {
             echo "$tc" | grep -e '^-' -e '^+'>/dev/null || continue
             ct="$(echo "$tc" | sed 's/^+\{1,\}//' | sed 's/^\-\{1,\}//')"
             echo "$tc" | grep '^+'>/dev/null &&
+            ! head -n1 "$t" | grep " #$ct\b">/dev/null &&
                 sed -i "1s/\(.*\)/\1 #$ct/" "$t"
             echo "$tc" | grep '^-'>/dev/null &&
                 sed -i "1s/ #$ct//" "$t" &&
