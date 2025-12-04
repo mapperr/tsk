@@ -49,19 +49,20 @@ Usage [v0.1.0]:
         shows extended help
 
 tsk files:
-    a tsk file contains the task title and task tags in the first line,
+    a tsk file contains the task title and task tags in the first line, with tags following the title,
     and the task body from the second line on.
     A tsk file is named with the timestamp the task was created and the task id.
 
 tags:
-    tasks can be tagged. A 'tag' is a string in the form of #tag or #tag:value
-    where tag and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces.
-    those tags will help search and task categorization or can be used by external integrations.
+    tasks can be tagged. A 'tag' is a string in the form of #value or #key:value
+    where key and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces.
+    those tags will help searching, task categorization, reports or can be used by external integrations.
+    among them there are special tags that are considered in task reports (you can change them with env vars):
+    - #done [env: TSK_TAG_DONE , cur: ]
 
 env vars:
     - TSK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: unset]
     - TSK_DIR: the directory containing your tasks [default: $HOME/.tsk, cur: /home/mapperr/src/git.sr.ht/~mapperr/tasks]
-    - TSK_DONE_TAG: the tasks tagged with the TSK_DONE tag are excluded from lists, unless you explicitly include them [default: #done , cur: done]
 ```
 
 ## References and related projects

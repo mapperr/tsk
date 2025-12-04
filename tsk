@@ -44,19 +44,20 @@ usage() {
 helpmsg() {
     usage; echo
     printf "tsk files:
-    a tsk file contains the task title and task tags in the first line,
+    a tsk file contains the task title and task tags in the first line, with tags following the title,
     and the task body from the second line on.
     A tsk file is named with the timestamp the task was created and the task id.
 
 tags:
-    tasks can be tagged. A 'tag' is a string in the form of #tag or #tag:value
-    where tag and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces.
-    those tags will help search and task categorization or can be used by external integrations.
+    tasks can be tagged. A 'tag' is a string in the form of #value or #key:value
+    where key and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces.
+    those tags will help searching, task categorization, reports or can be used by external integrations.
+    among them there are special tags that are considered in task reports (you can change them with env vars):
+    - #done [env: TSK_TAG_DONE , cur: $TSK_TAG_DONE]
 
 env vars:
     - TSK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: ${TSK_DEBUG:-unset}]
     - TSK_DIR: the directory containing your tasks [default: \$HOME/.tsk, cur: $tskdir]
-    - TSK_DONE_TAG: the tasks tagged with the TSK_DONE_TAG tag are treated in special way in reports, [default: #done , cur: $TSK_DONE_TAG]
 "
 }
 _err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
@@ -124,11 +125,9 @@ show_tasks() {
 }
 tag_tasks() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
-    if [ -z "$1" ] && [ -t 0 ]; then _print_task "$tskdir/$(list_tasks | tail -n1 | cut -d: -f1).$tskfile_ext"; return $?; fi
-    [ ! -t 0 ] && tasklist="$(cat | list_tasks "$*")"
-    [ -t 0 ] && tasklist="$(list_tasks "$*")"
+    ( [ -z "$1" ] || [ -t 0 ] ) && return 0
+    [ ! -t 0 ] && tasklist="$(cat | list_tasks)"
     tskfiles="$(echo "$tasklist" | _get_abs_tskfile_list)"
-    for t in $tskfiles; do _print_task "$t"; echo "---"; done
 }
 edit_task() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
