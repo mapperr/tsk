@@ -1,5 +1,5 @@
 #! /bin/sh
-version="0.1.0"
+version="0.3.0"
 tskdir="${TSK_DIR:-$HOME/.tsk}"
 editor="${EDITOR:-vi}"
 tmpdir="$TMPDIR:-/tmp"
@@ -32,6 +32,11 @@ usage() {
     $s s [filters]
         shows the tasks to stdout
         you can pipe in a list of task filtered from $s l
+
+    $s t <tags changes>...
+        changes tags to the list of tasks piped in
+        it works on the task list you pipe in from $s l
+        the tag change syntax is '-tag' to remove a tag and '+tag' to add it
 
     $s g [git cmds/args]
         executes git commands in the tsk directory, e.g.: tsk g pull
@@ -128,6 +133,18 @@ tag_tasks() {
     ( [ -z "$1" ] || [ -t 0 ] ) && return 0
     [ ! -t 0 ] && tasklist="$(cat | list_tasks)"
     tskfiles="$(echo "$tasklist" | _get_abs_tskfile_list)"
+    for t in $tskfiles; do
+        for tc in "$@"; do
+            echo "$tc" | grep -e '^-' -e '^+'>/dev/null || continue
+            ct="$(echo "$tc" | sed 's/^+\{1,\}//' | sed 's/^\-\{1,\}//')"
+            echo "$tc" | grep '^+'>/dev/null &&
+                sed -i "1s/\(.*\)/\1 #$ct/" "$t"
+            echo "$tc" | grep '^-'>/dev/null &&
+                sed -i "1s/ #$ct//" "$t" &&
+                sed -i "1s/#$ct //" "$t"
+        done
+    done
+    echo "$tasklist" | list_tasks
 }
 edit_task() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
@@ -164,6 +181,9 @@ add_task() {
     echo "$body" >>"$tskdir/$tskfile"
     _info "created task: $title [$tskfile]"
 }
+report() {
+    _warn "to be implemented"
+}
 main() {
     cmd="$1"; shift
     case $cmd in
@@ -172,6 +192,7 @@ main() {
         a) add_task "$@";;
         d) del_tasks "$@";;
         t) tag_tasks "$@";;
+        r) report "$@";;
         e) edit_task "$@";;
         s) show_tasks "$@";;
         h) helpmsg && exit 0;;
