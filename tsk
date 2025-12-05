@@ -61,12 +61,14 @@ tags:
 env vars:
     - TSK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: ${TSK_DEBUG:-unset}]
     - TSK_DIR: the directory containing your tasks [default: \$HOME/.tsk, cur: $tskdir]
+    - TSK_CATCMD: command to print tasks to stdout. tasks content is pipe-in the command
+      (if unset, mdcat is used, falling back to cat) [default: unset, cur: $TSK_CATCMD]
 "
 }
 _err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
 _warn() { printf "%s: warn: %s\n" "$(basename "$0")" "$1" >&2; }
 _info() { printf "%s: %s\n" "$(basename "$0")" "$1" >&2; }
-_dbg() { [ "$TRK_DEBUG" ] && printf "%s: debug: %s\n" "$(basename "$0")" "$1" >&2; return 0; }
+_dbg() { [ "$TSK_DEBUG" ] && printf "%s: debug: %s\n" "$(basename "$0")" "$1" >&2; return 0; }
 # $1 = number of chars to receive, $2 = filter for the chars
 _rand_chars() { LC_ALL=C tr -dc "$2" </dev/urandom | dd ibs=1 obs=1 count="$1" 2>/dev/null; }
 _mktemp() {
@@ -108,6 +110,7 @@ _print_task() {
     title="$(_get_title "$1")"
     tags="$(_get_tags "$1")"
     pcmd=cat; command -v mdcat>/dev/null && pcmd=mdcat
+    pcmd="${TSK_CATCMD:-$pcmd}"
     {
         echo "# $title"
         [ -n "$tags" ] && echo "\`$tags\`"
@@ -173,12 +176,12 @@ del_tasks() {
 add_task() {
     [ -z "$1" ] && usage && return 1
     body=''; [ ! -t 0 ] && body="$(cat)"
-    title="$(printf "$*" | sed '/ \{1,\}/d')"
+    title="$(printf "$*" | sed 's/ \{1,\}$//' )"; _dbg "title: [$title]"
     tskfile="$(_create_task_filename)"
     echo "$title" >"$tskdir/$tskfile"
     echo "" >>"$tskdir/$tskfile"
     echo "$body" >>"$tskdir/$tskfile"
-    _info "created task: $title [$tskfile]"
+    _info "created task ${tskfile%.$tskfile_ext}: $title"
 }
 report() {
     _warn "to be implemented"
