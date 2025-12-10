@@ -66,6 +66,8 @@ tags:
 env vars:
     - TSK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: unset]
     - TSK_DIR: the directory containing your tasks [default: $HOME/.tsk, cur: /home/mapperr/src/git.sr.ht/~mapperr/tasks]
+    - TSK_CATCMD: command to print tasks to stdout. tasks content is pipe-in the command
+      (if unset, mdcat is used, falling back to cat) [default: unset, cur: ]
 ```
 
 ## References and related projects
