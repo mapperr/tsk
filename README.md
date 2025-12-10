@@ -21,7 +21,8 @@ Usage [v0.3.0]:
         shows the task list, eventually filtered
         filters are grep patterns, and they are applied sequentially,
         you can also start a pattern with a '-' to generate a 'grep -v' filter
-    tsk ll [filters..]
+
+    tsk ll [filter]
         shows the task list, eventually filtered searching in tasks body
         you can pipe in the result of another tsk l to narrow the search
 
@@ -50,7 +51,8 @@ Usage [v0.3.0]:
     tsk g [git cmds/args]
         executes git commands in the tsk directory, e.g.: tsk g pull
     tsk y [commit msg]
-        executes git add, commit -m 'commit msg' (or 'sync'), pull and push in the tsk directory
+        executes git add, commit -m 'commit msg' (or 'sync' by default),
+        pull and push in the tsk directory
     tsk h
         shows extended help
 

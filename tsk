@@ -13,7 +13,8 @@ usage() {
         shows the task list, eventually filtered
         filters are grep patterns, and they are applied sequentially,
         you can also start a pattern with a '-' to generate a 'grep -v' filter
-    $s ll [filters..]
+
+    $s ll [filter]
         shows the task list, eventually filtered searching in tasks body
         you can pipe in the result of another $s l to narrow the search
 
@@ -42,7 +43,8 @@ usage() {
     $s g [git cmds/args]
         executes git commands in the tsk directory, e.g.: tsk g pull
     $s y [commit msg]
-        executes git add, commit -m 'commit msg' (or 'sync'), pull and push in the tsk directory
+        executes git add, commit -m 'commit msg' (or 'sync' by default),
+        pull and push in the tsk directory
     $s h
         shows extended help
 "
@@ -129,22 +131,6 @@ search_tasks() {
     [ ! -t 0 ] && _print_task_list "$(cat | _get_abs_tskfile_list | xargs -I% grep -il "${*:-.}" % | sort -u)"
     [ -t 0 ] && _print_task_list "$(for f in "$tskdir/"*".$tskfile_ext"; do echo "$f"; done | xargs -I% grep -il "${*:-.}" % | sort -u)"
 }
-search_tasks_new() {
-    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
-    starting_list="$(_print_task_list)"
-    [ ! -t 0 ] && starting_list="$(cat)"
-    task_list="$starting_list"
-    for g in "$@"; do
-        if printf '%s' "$g" | grep '^-'>/dev/null; then
-            gp="$(printf '%s' "$g" | sed 's/^\-//')"
-            _dbg "exluding pattern: $gp"
-            task_list="$(echo "$task_list" | grep -iv "$gp")"
-        else _dbg "filtering by pattern: $g"
-            task_list="$(echo "$task_list" | grep -i "$g")"; fi
-        _dbg "task list: $task_list"
-    done
-    echo "$task_list"
-}
 show_tasks() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
     [ -z "$1" ] && [ -t 0 ] && return 0
@@ -152,7 +138,7 @@ show_tasks() {
     [ -t 0 ] && tasklist="$(list_tasks "$*")"
     tskfiles="$(echo "$tasklist" | _get_abs_tskfile_list)"
     for t in $tskfiles; do
-        echo "[$(basename "${t%.$tskfile_ext}")]"
+        echo "[$(basename "${t%.$tskfile_ext}")]" >&2
         _print_task "$t"
         echo "___" >&2
     done
