@@ -90,8 +90,7 @@ _print_task_list() {
     list="$1"
     { for t in $list; do
         [ -f "$t" ] || continue
-        { title="$(head -n1 "$t")"; done_mark=''
-        echo "$(basename "${t%.$tskfile_ext}"): $done_mark${done_mark+ }$title"; } & done; wait
+        { title="$(head -n1 "$t")"; echo "$(basename "${t%.$tskfile_ext}"): $title"; } & done; wait
     } | sort -n
 }
 _get_title() { tskfile="$1";l1="$(head -n1 "$tskfile")"; ! printf "$l1" | grep '#'>/dev/null && printf "$l1" && return 0; printf "$l1"|cut -d'#' -f1;}
@@ -108,6 +107,11 @@ _print_task() {
     } | $pcmd
 }
 list_tasks() {
+    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
+    [ ! -t 0 ] && _print_task_list "$(cat | grep -i "${*:-.}" | _get_abs_tskfile_list)"
+    [ -t 0 ] && _print_task_list "$tskdir/*.$tskfile_ext" | grep -i "${*:-.}"
+}
+list_tasks2() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
     [ ! -t 0 ] && _print_task_list "$(cat | grep -i "${*:-.}" | _get_abs_tskfile_list)"
     [ -t 0 ] && _print_task_list "$tskdir/*.$tskfile_ext" | grep -i "${*:-.}"
