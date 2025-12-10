@@ -9,10 +9,11 @@ TSK_DONE_TAG=${TSK_DONE_TAG:-done}
 usage() {
     s="$(basename $0)"
     printf "Usage [v$version]:
-    $s l [filters]
+    $s l [filters..]
         shows the task list, eventually filtered
-        you can pipe in the result of another $s l to narrow the search
-    $s ll [filters]
+        filters are grep patterns, and they are applied sequentially,
+        you can also start a pattern with a '-' to generate a 'grep -v' filter
+    $s ll [filters..]
         shows the task list, eventually filtered searching in tasks body
         you can pipe in the result of another $s l to narrow the search
 
@@ -88,6 +89,7 @@ _no_tasks() { ! ls $tskdir/*."$tskfile_ext" >/dev/null 2>&1;}
 _get_abs_tskfile_list() { [ ! -t 0 ] && set -- "$(cat)"; echo "$1" | cut -d: -f1 | xargs -I% echo "$tskdir/%.$tskfile_ext";}
 _print_task_list() {
     list="$1"
+    [ -z "$list" ] && list=$tskdir/*.$tskfile_ext
     { for t in $list; do
         [ -f "$t" ] || continue
         { title="$(head -n1 "$t")"; echo "$(basename "${t%.$tskfile_ext}"): $title"; } & done; wait
@@ -108,18 +110,40 @@ _print_task() {
 }
 list_tasks() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
-    [ ! -t 0 ] && _print_task_list "$(cat | grep -i "${*:-.}" | _get_abs_tskfile_list)"
-    [ -t 0 ] && _print_task_list "$tskdir/*.$tskfile_ext" | grep -i "${*:-.}"
-}
-list_tasks2() {
-    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
-    [ ! -t 0 ] && _print_task_list "$(cat | grep -i "${*:-.}" | _get_abs_tskfile_list)"
-    [ -t 0 ] && _print_task_list "$tskdir/*.$tskfile_ext" | grep -i "${*:-.}"
+    starting_list="$(_print_task_list)"
+    [ ! -t 0 ] && starting_list="$(cat)"
+    task_list="$starting_list"
+    for g in "$@"; do
+        if printf '%s' "$g" | grep '^-'>/dev/null; then
+            gp="$(printf '%s' "$g" | sed 's/^\-//')"
+            _dbg "exluding pattern: $gp"
+            task_list="$(echo "$task_list" | grep -iv "$gp")"
+        else _dbg "filtering by pattern: $g"
+            task_list="$(echo "$task_list" | grep -i "$g")"; fi
+        _dbg "task list: $task_list"
+    done
+    echo "$task_list"
 }
 search_tasks() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
     [ ! -t 0 ] && _print_task_list "$(cat | _get_abs_tskfile_list | xargs -I% grep -il "${*:-.}" % | sort -u)"
     [ -t 0 ] && _print_task_list "$(for f in "$tskdir/"*".$tskfile_ext"; do echo "$f"; done | xargs -I% grep -il "${*:-.}" % | sort -u)"
+}
+search_tasks_new() {
+    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
+    starting_list="$(_print_task_list)"
+    [ ! -t 0 ] && starting_list="$(cat)"
+    task_list="$starting_list"
+    for g in "$@"; do
+        if printf '%s' "$g" | grep '^-'>/dev/null; then
+            gp="$(printf '%s' "$g" | sed 's/^\-//')"
+            _dbg "exluding pattern: $gp"
+            task_list="$(echo "$task_list" | grep -iv "$gp")"
+        else _dbg "filtering by pattern: $g"
+            task_list="$(echo "$task_list" | grep -i "$g")"; fi
+        _dbg "task list: $task_list"
+    done
+    echo "$task_list"
 }
 show_tasks() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1

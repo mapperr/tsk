@@ -17,10 +17,11 @@ Clone the repo and copy or link `tsk` into your PATH.
 
 ```
 Usage [v0.3.0]:
-    tsk l [filters]
+    tsk l [filters..]
         shows the task list, eventually filtered
-        you can pipe in the result of another tsk l to narrow the search
-    tsk ll [filters]
+        filters are grep patterns, and they are applied sequentially,
+        you can also start a pattern with a '-' to generate a 'grep -v' filter
+    tsk ll [filters..]
         shows the task list, eventually filtered searching in tasks body
         you can pipe in the result of another tsk l to narrow the search
 

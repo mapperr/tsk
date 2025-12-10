@@ -3,9 +3,7 @@
 
 doc:
     #!/bin/sh
-    unset TSK_DIR
-    unset TSK_CATCMD
-    unset TSK_DEBUG
+    for k in $(env | grep '^TSK_' | cut -d'=' -f1); do unset $k; done
     TSK_USAGE="$(./tsk h)" \
         envsubst '$TSK_USAGE' <README.tpl.md >README.md
     sed -i "s@$HOME@\$HOME@" README.md
