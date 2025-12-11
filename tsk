@@ -146,21 +146,23 @@ show_tasks() {
 tag_tasks() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
     ( [ -z "$1" ] || [ -t 0 ] ) && return 0
-    [ ! -t 0 ] && tasklist="$(cat | list_tasks)"
+    [ ! -t 0 ] && tasklist="$(cat)"
     tskfiles="$(echo "$tasklist" | _get_abs_tskfile_list)"
     for t in $tskfiles; do
         for tc in "$@"; do
             echo "$tc" | grep -e '^-' -e '^+'>/dev/null || continue
+            tc="$(echo "$tc" | sed 's/^\(\-\)#\{1,\}/\1/' | sed 's/^\(\+\)#\{1,\}/\1/')"
+            _dbg "working on tag change: $tc"
             ct="$(echo "$tc" | sed 's/^+\{1,\}//' | sed 's/^\-\{1,\}//')"
-            echo "$tc" | grep '^+'>/dev/null &&
-            ! head -n1 "$t" | grep " #$ct\b">/dev/null &&
-                sed -i "1s/\(.*\)/\1 #$ct/" "$t"
-            echo "$tc" | grep '^-'>/dev/null &&
-                sed -i "1s/ #$ct//" "$t" &&
-                sed -i "1s/#$ct //" "$t"
+            if echo "$tc" | grep '^+'>/dev/null &&
+            ! head -n1 "$t" | grep " #$ct\b">/dev/null; then
+                sed -i "1s/\(.*\)/\1 #$ct/" "$t"; _dbg "add tag: $ct"; fi
+            if echo "$tc" | grep '^-'>/dev/null; then
+                sed -i "1s/ #$ct//" "$t"; sed -i "1s/#$ct //" "$t"; 
+                _dbg "remove tag: $ct"; fi
         done
     done
-    echo "$tasklist" | list_tasks
+    _info "tags updated"
 }
 edit_task() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
