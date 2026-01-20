@@ -16,7 +16,7 @@ Clone the repo and copy or link `tsk` into your PATH.
 ## Usage
 
 ```
-Usage [v0.4.0]:
+Usage [v0.4.1]:
     tsk l [filters..]
         shows the task list, eventually filtered
         filters are grep patterns, and they are applied sequentially,
@@ -40,8 +40,11 @@ Usage [v0.4.0]:
         you can pipe in one task filtered from tsk l
 
     tsk s [filters]
+    tsk ss [filters]
         shows the tasks to stdout
-        you can pipe in a list of task filtered from tsk l
+        you can pipe in a list of tasks filtered from tsk l
+        using ss forces the use of the cat command, useful if you want to copy a task:
+        tsk ss mytask | tsk a mytask-copy ; tsk e
 
     tsk t <tags changes>...
         changes tags to the list of tasks piped in
