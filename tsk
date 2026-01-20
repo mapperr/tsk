@@ -32,8 +32,11 @@ usage() {
         you can pipe in one task filtered from $s l
 
     $s s [filters]
+    $s ss [filters]
         shows the tasks to stdout
-        you can pipe in a list of task filtered from $s l
+        you can pipe in a list of tasks filtered from $s l
+        using ss forces the use of the cat command, useful if you want to copy a task:
+        $s ss mytask | $s a mytask-copy ; $s e
 
     $s t <tags changes>...
         changes tags to the list of tasks piped in
@@ -140,7 +143,7 @@ show_tasks() {
     for t in $tskfiles; do
         echo "[$(basename "${t%.$tskfile_ext}")]" >&2
         _print_task "$t"
-        echo "___" >&2
+        echo "---" >&2
     done
 }
 tag_tasks() {
@@ -213,6 +216,7 @@ main() {
         r) report "$@";;
         e) edit_task "$@";;
         s) show_tasks "$@";;
+        ss) TSK_CATCMD=cat show_tasks "$@";;
         h) helpmsg && exit 0;;
         g) cd "$tskdir" && git "$@";;
         y) cd "$tskdir" && git add -A && git commit -m "${*:-sync}"; git pull && git push;;
