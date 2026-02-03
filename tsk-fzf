@@ -1,0 +1,36 @@
+#!/bin/sh
+
+helpmsg() {
+    echo "usage: $(basename $0) [initial_query]"
+}
+
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    helpmsg
+    exit 0
+fi
+
+q="$@"
+
+fzf_cmd=fzf
+
+reload_cmd="IFS=:; tsk l"
+tsk_entries=$(IFS=:; tsk l)
+
+tsk_entry=$(printf "%s\n" "${tsk_entries}" | \
+    sed -E 's/^[0-9]+ (.+)$/\1/' | \
+    $fzf_cmd -q "$q" --print-query --no-sort --keep-right \
+    --cycle --history=$HOME/.fzfhistory-pa \
+    --header 'C-s show; C-e edit; C-a add; C-d delete; C-r git sync' \
+    --bind 'ctrl-s:execute(echo "entry: {}\n"; tsk s {}; echo "\nhit enter to continue"; read c)' \
+    --bind 'ctrl-e:execute(tsk e {})' \
+    --bind 'ctrl-a:execute(printf "entry: "; read c; printf "%s" "$c"; echo "y" | tsk a "$c" && tsk e "$c")+reload('"$reload_cmd"')' \
+    --bind 'ctrl-d:execute(tsk d {})+reload('"$reload_cmd"')' \
+    --bind 'ctrl-r:execute(tsk y; echo "hit enter to continue"; read c)' |
+    tail -n1) || exit 70
+
+[ -z "$tsk_entry" ] && exit 71
+
+tsk s $tsk_entry
+echo "entry: $tsk_entry"
+
+# [1]: https://stackoverflow.com/questions/369758/how-to-trim-whitespace-from-a-bash-variable
