@@ -75,6 +75,7 @@ _err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
 _warn() { printf "%s: warn: %s\n" "$(basename "$0")" "$1" >&2; }
 _info() { printf "%s: %s\n" "$(basename "$0")" "$1" >&2; }
 _dbg() { [ "$TSK_DEBUG" ] && printf "%s: debug: %s\n" "$(basename "$0")" "$1" >&2; return 0; }
+_rand_chars() { LC_ALL=C tr -dc "$2" </dev/urandom | dd ibs=1 obs=1 count="$1" 2>/dev/null; }
 _mktemp() { tmpdir=/dev/shm; [ -w /dev/shm ] || tmpdir=${TMPDIR:-/tmp}; echo "mkstemp($tmpdir/XXXXXXXX)" | m4; }
 _epoch() { date '+%s'; }
 _now() { date '+%Y%m%d%H%M%S'; }
