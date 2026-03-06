@@ -161,13 +161,13 @@ tag_tasks() {
 }
 edit_task() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
-    if [ -z "$1" ] && [ -t 0 ]; then $EDITOR "$tskdir/$(list_tasks | tail -n1 | cut -d: -f1).$tskfile_ext"; return $?; fi
+    if [ -z "$1" ] && [ -t 0 ]; then cd "$tskdir" && $EDITOR "$tskdir/$(list_tasks | tail -n1 | cut -d: -f1).$tskfile_ext"; return $?; fi
     [ ! -t 0 ] && tasklist="$(cat | list_tasks "$*")"
     [ -t 0 ] && tasklist="$(list_tasks "$*")"
     ( [ -z "$tasklist" ] || [ "$(echo "$tasklist" | wc -l)" -ne 1 ] ) &&
         _warn "task list is:" && echo "$tasklist" 1>&2 && _err "filter the list to obtain only 1 task"
     tskfile="$(echo "$tasklist" | _get_abs_tskfile_list)"
-    $EDITOR "$tskfile"
+    cd "$tskdir" && $EDITOR "$tskfile"
 }
 del_tasks() {
     _no_tasks && _warn "no tasks in [$tskdir]" && return 1
