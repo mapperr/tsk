@@ -1,7 +1,7 @@
 #!/bin/sh
 
 helpmsg() {
-    echo "usage: $(basename $0) [initial_query]"
+    echo "usage: $(basename "$0") [initial_query]"
 }
 
 if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
@@ -9,7 +9,7 @@ if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     exit 0
 fi
 
-q="$@"
+q="$*"
 
 fzf_cmd=fzf
 
@@ -19,7 +19,7 @@ tsk_entries=$(IFS=:; tsk l)
 tsk_entry=$(printf "%s\n" "${tsk_entries}" | \
     sed -E 's/^[0-9]+ (.+)$/\1/' | \
     $fzf_cmd -q "$q" --print-query --no-sort --keep-right \
-    --cycle --history=$HOME/.fzfhistory-pa \
+    --cycle --history="$HOME"/.fzfhistory-tsk \
     --header 'C-s show; C-e edit; C-a add; C-d delete; C-r git sync' \
     --bind 'ctrl-s:execute(echo "entry: {}\n"; tsk s {}; echo "\nhit enter to continue"; read c)' \
     --bind 'ctrl-e:execute(tsk e {})' \
@@ -30,7 +30,7 @@ tsk_entry=$(printf "%s\n" "${tsk_entries}" | \
 
 [ -z "$tsk_entry" ] && exit 71
 
-tsk s $tsk_entry
+tsk s "$tsk_entry"
 echo "entry: $tsk_entry"
 
 # [1]: https://stackoverflow.com/questions/369758/how-to-trim-whitespace-from-a-bash-variable

@@ -16,7 +16,7 @@ Clone the repo and copy or link `tsk` into your PATH.
 ## Usage
 
 ```
-Usage [v0.4.1]:
+Usage [v0.5.0]:
     tsk l [filters..]
         shows the task list, eventually filtered
         filters are grep patterns, and they are applied sequentially,

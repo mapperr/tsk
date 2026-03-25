@@ -1,5 +1,5 @@
 #! /bin/sh
-version="0.4.1"
+version="0.5.0"
 tskdir="${TSK_DIR:-$HOME/.tsk}"
 editor="${EDITOR:-vi}"
 tmpdir="$TMPDIR:-/tmp"
@@ -79,10 +79,11 @@ _rand_chars() { LC_ALL=C tr -dc "$2" </dev/urandom | dd ibs=1 obs=1 count="$1" 2
 _mktemp() { tmpdir=/dev/shm; [ -w /dev/shm ] || tmpdir=${TMPDIR:-/tmp}; echo "mkstemp($tmpdir/XXXXXXXX)" | m4; }
 _epoch() { date '+%s'; }
 _now() { date '+%Y%m%d%H%M%S'; }
+_now_date() { date '+%Y%m%d'; }
 _today() { date '+%Y-%m-%d'; }
-_validate_date() { date -d "$(printf "$1")" >/dev/null 2>&1;}
-_create_task_filename() { printf '%s-%s.%s' "$(_now)" "$(_rand_chars 16 'A-Za-z0-9')" "$tskfile_ext";}
-_no_tasks() { ! ls $tskdir/*."$tskfile_ext" >/dev/null 2>&1;}
+_validate_date() { date -d "$(printf "%s" "$1")" >/dev/null 2>&1;}
+_create_task_filename() { printf '%s-%s.%s' "$(_now_date)" "$(_rand_chars 4 'A-Za-z0-9')" "$tskfile_ext";}
+_no_tasks() { ! ls "$tskdir"/*."$tskfile_ext" >/dev/null 2>&1;}
 _get_abs_tskfile_list() { [ ! -t 0 ] && set -- "$(cat)"; echo "$1" | cut -d: -f1 | xargs -I% echo "$tskdir/%.$tskfile_ext";}
 _print_task_list() {
     list="$1"
@@ -164,7 +165,7 @@ edit_task() {
     if [ -z "$1" ] && [ -t 0 ]; then cd "$tskdir" && $EDITOR "$tskdir/$(list_tasks | tail -n1 | cut -d: -f1).$tskfile_ext"; return $?; fi
     [ ! -t 0 ] && tasklist="$(cat | list_tasks "$*")"
     [ -t 0 ] && tasklist="$(list_tasks "$*")"
-    ( [ -z "$tasklist" ] || [ "$(echo "$tasklist" | wc -l)" -ne 1 ] ) &&
+	{ [ -z "$tasklist" ] || [ "$(echo "$tasklist" | wc -l)" -ne 1 ]; } &&
         _warn "task list is:" && echo "$tasklist" 1>&2 && _err "filter the list to obtain only 1 task"
     tskfile="$(echo "$tasklist" | _get_abs_tskfile_list)"
     cd "$tskdir" && $EDITOR "$tskfile"
