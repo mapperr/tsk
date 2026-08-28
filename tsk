@@ -1,11 +1,13 @@
 #!/bin/sh
 
-version="0.6.1"
+version="0.7.1"
 tskdir="${TSK_DIR:-$HOME/.tsk}"
 editor="${EDITOR:-vi}"
 tmpdir="${TMPDIR:-/tmp}"
 tskfile_ext="tsk.md"
 TSK_DONE_TAG="${TSK_DONE_TAG:-done}"
+# TSK_DONE_TAG is stored internally without the tag sigil.
+TSK_DONE_TAG=${TSK_DONE_TAG#+}
 
 usage() {
     s="$(basename "$0")"
@@ -14,16 +16,18 @@ Usage [v$version]:
     $s l [filters..]
         shows the task list, eventually filtered
         filters are grep patterns applied sequentially; prefix a pattern with '-'
-        to exclude it. A filter in the form '#tag' matches an exact tag.
+        to exclude it. A filter in the form '+tag' matches an exact tag;
+        use '-+tag' to exclude an exact tag.
 
     $s ll [filters..]
-        searches only in task bodies, applying filters sequentially
-        you can pipe in the result of another '$s l' to narrow the search
+        searches task bodies, applying filters sequentially; '+tag' and '-+tag'
+        still act as exact metadata tag filters. You can pipe in the result of
+        another '$s l' to narrow the search
 
     $s a <title and tags>
         adds a new task; the task body can be piped on stdin, e.g.:
-        echo 'develop some web application' | $s a 'Do something #dev #due:tomorrow'
-        relative due dates are normalized only by the '$s due' command
+        echo 'develop some web application' | $s a Do something +dev +due:tomorrow
+        relative due dates are normalized when the task is created
 
     $s d [--force] [filters..]
         deletes tasks. Piped selections are not confirmed.
@@ -90,17 +94,24 @@ tsk files:
     creation timestamp and a short random suffix.
 
 tags:
-    A tag is '#value' or '#key:value'. Components may contain letters, numbers,
+    A tag is '+value' or '+key:value'. Components may contain letters, numbers,
     underscores '_' and dashes '-'. Some tags have conventional semantics:
 
-        #$TSK_DONE_TAG             completed task
-        #due:YYYY-MM-DD           due date
-        #parent:<task-id>         hierarchy (one parent per task)
-        #depends:<task-id>        dependency
-        #link:<task-id>           generic relation
+        +$TSK_DONE_TAG             completed task
+        +due:YYYY-MM-DD           due date
+        +parent:<task-id>         hierarchy (one parent per task)
+        +depends:<task-id>        dependency
+        +link:<task-id>           generic relation
 
     Backlinks, children, blockers and derived states are not stored: they are
-    calculated from these tags.
+    calculated from these tags. '+' is the only supported tag sigil.
+
+filters:
+    '+tag' is an exact tag filter. '-+tag' excludes that exact tag. Other filters
+    remain grep patterns and '-pattern' negates them. In 'l' and commands based on
+    its selection they match the rendered task line; in 'll' they match only the
+    task body. Therefore 'work' is a text/pattern search, while '+work' always means
+    exactly tag work.
 
 env vars:
     - TSK_DEBUG: show debug information [default: unset, cur: ${TSK_DEBUG:-unset}]
@@ -116,7 +127,14 @@ _warn() { printf '%s: warn: %s\n'  "$(basename "$0")" "$1" >&2; }
 _info() { printf '%s: %s\n'        "$(basename "$0")" "$1" >&2; }
 _dbg()  { [ -n "${TSK_DEBUG:-}" ] && printf '%s: debug: %s\n' "$(basename "$0")" "$1" >&2; return 0; }
 
-_rand_chars() { LC_ALL=C tr -dc "$2" </dev/urandom | dd ibs=1 obs=1 count="$1" 2>/dev/null; }
+_rand_chars() {
+    count=$1
+    chars=$2
+    while :; do
+        out=$(dd if=/dev/urandom bs=64 count=1 2>/dev/null | LC_ALL=C tr -dc "$chars" | cut -c1-"$count")
+        [ "${#out}" -eq "$count" ] && { printf '%s' "$out"; return 0; }
+    done
+}
 _now() { date '+%Y%m%d%H%M%S%3N'; }
 _today() { date '+%Y-%m-%d'; }
 _normalize_date() { date -d "$1" '+%Y-%m-%d' 2>/dev/null; }
@@ -172,7 +190,7 @@ _get_title() {
         NR == 1 {
             out = ""
             for (i = 1; i <= NF; i++) {
-                if ($i ~ /^#[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$/) continue
+                if ($i ~ /^\+[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$/) continue
                 out = out (out == "" ? "" : " ") $i
             }
             print out
@@ -185,7 +203,7 @@ _get_tags() {
     awk '
         NR == 1 {
             for (i = 1; i <= NF; i++)
-                if ($i ~ /^#[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$/)
+                if ($i ~ /^\+[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$/)
                     print substr($i, 2)
             exit
         }
@@ -198,7 +216,7 @@ _get_tag_values() {
 }
 
 _has_tag() {
-    wanted=${1#\#}
+    wanted=${1#+}
     _get_tags "$2" | grep -F -x -q "$wanted"
 }
 
@@ -210,7 +228,7 @@ _render_task_line() {
     id=$1
     printf '%s: %s' "$id" "$(_get_title "$(_task_path "$id")")"
     for tag in $(_get_tags "$(_task_path "$id")"); do
-        printf ' #%s' "$tag"
+        printf ' +%s' "$tag"
     done
     printf '\n'
 }
@@ -221,12 +239,14 @@ _render_ids() {
     done
 }
 
-_id_in_list() {
-    wanted=$1
+_id_in_list() (
+    il_wanted=$1
     shift
-    for id in $*; do [ "$id" = "$wanted" ] && return 0; done
+    for il_id do
+        [ "$il_id" = "$il_wanted" ] && return 0
+    done
     return 1
-}
+)
 
 _filter_ids() {
     ids=$1
@@ -242,8 +262,9 @@ _filter_ids() {
         next=''
 
         case "$pattern" in
-            \#*)
-                tag=${pattern#\#}
+            +*)
+                tag=${pattern#+}
+                _valid_tag "$tag" || _err "invalid exact tag filter [$pattern]"
                 _dbg "filtering by exact tag [$tag], invert=$invert"
                 for id in $ids; do
                     if _has_tag "$tag" "$(_task_path "$id")"; then match=0; else match=1; fi
@@ -318,7 +339,7 @@ _write_first_line() {
     tmp=$(mktemp "$tmpdir/tsk.XXXXXX") || _err "cannot create temporary file"
     {
         printf '%s' "$title"
-        for tag in $tags; do printf ' #%s' "$tag"; done
+        for tag in $tags; do printf ' +%s' "$tag"; done
         printf '\n'
         sed -n '2,$p' "$file"
     } >"$tmp" || { rm -f "$tmp"; _err "cannot update [$file]"; }
@@ -332,7 +353,7 @@ _valid_tag() {
 
 _add_tag_file() {
     file=$1
-    tag=${2#\#}
+    tag=${2#+}
     _valid_tag "$tag" || _err "invalid tag [$tag]"
     _has_tag "$tag" "$file" && return 0
     title=$(_get_title "$file")
@@ -344,7 +365,7 @@ _add_tag_file() {
 
 _remove_tag_file() {
     file=$1
-    tag=${2#\#}
+    tag=${2#+}
     title=$(_get_title "$file")
     tags=$(_get_tags "$file" | awk -v t="$tag" '$0 != t')
     _write_first_line "$file" "$title" "$tags"
@@ -371,7 +392,7 @@ _print_task() {
             first=1
             for tag in $tags; do
                 [ "$first" -eq 0 ] && printf ' '
-                printf '#%s' "$tag"
+                printf '+%s' "$tag"
                 first=0
             done
             printf '`\n'
@@ -396,9 +417,24 @@ search_tasks() {
         case "$pattern" in -*) invert=1; pattern=${pattern#-} ;; esac
         [ -n "$pattern" ] || continue
         next=''
+
         for id in $ids; do
             file=$(_task_path "$id")
-            if sed -n '2,$p' "$file" | grep -i -e "$pattern" >/dev/null 2>&1; then match=0; else match=1; fi
+            case "$pattern" in
+                +*)
+                    tag=${pattern#+}
+                    _valid_tag "$tag" || _err "invalid exact tag filter [$pattern]"
+                    if _has_tag "$tag" "$file"; then match=0; else match=1; fi
+                    ;;
+                *)
+                    if sed -n '2,$p' "$file" | grep -i -e "$pattern" >/dev/null 2>&1; then
+                        match=0
+                    else
+                        match=1
+                    fi
+                    ;;
+            esac
+
             if { [ "$invert" -eq 0 ] && [ "$match" -eq 0 ]; } ||
                { [ "$invert" -eq 1 ] && [ "$match" -ne 0 ]; }; then
                 next="${next}${next:+
@@ -437,7 +473,7 @@ tag_tasks() {
         esac
         op=$(printf '%s' "$change" | cut -c1)
         tag=${change#?}
-        while [ "${tag#\#}" != "$tag" ]; do tag=${tag#\#}; done
+        # Changes are +tag / -tag. Extra sigils are invalid.
         _valid_tag "$tag" || _err "invalid tag [$tag]"
         for id in $ids; do
             file=$(_task_path "$id")
@@ -460,6 +496,11 @@ add_task() {
         printf '%s\n\n' "$title"
         if [ -n "$body" ]; then printf '%s\n' "$body"; fi
     } >"$file" || _err "cannot create task [$file]"
+
+    # Parse once and rewrite the first line, normalizing recognized +tags.
+    parsed_title=$(_get_title "$file")
+    parsed_tags=$(_get_tags "$file")
+    _write_first_line "$file" "$parsed_title" "$parsed_tags"
 
     dues=$(_get_tag_values due "$file")
     due_count=$(printf '%s\n' "$dues" | sed '/^$/d' | wc -l | tr -d ' ')
@@ -703,7 +744,7 @@ info_task() {
     printf 'state: %s\n' "$state"
     [ -n "$due" ] && printf 'due: %s\n' "$due"
 
-    plain_tags=$(_get_tags "$file" | awk -F: -v d="$TSK_DONE_TAG" '$0 != d && $1 != "due" && $1 != "parent" && $1 != "depends" && $1 != "link" { print "#" $0 }')
+    plain_tags=$(_get_tags "$file" | awk -F: -v d="$TSK_DONE_TAG" '$0 != d && $1 != "due" && $1 != "parent" && $1 != "depends" && $1 != "link" { print "+" $0 }')
     [ -n "$plain_tags" ] && printf 'tags: %s\n' "$(printf '%s\n' "$plain_tags" | paste -sd' ' -)"
 
     parent=$(_parent_of "$id")
@@ -863,7 +904,7 @@ report() {
 
     if [ -s "$tags_tmp" ]; then
         printf '\nTAGS:\n'
-        LC_ALL=C sort "$tags_tmp" | uniq -c | sort -nr | awk '{ count=$1; $1=""; sub(/^ +/, ""); printf "  %4d  #%s\n", count, $0 }'
+        LC_ALL=C sort "$tags_tmp" | uniq -c | sort -nr | awk '{ count=$1; $1=""; sub(/^ +/, ""); printf "  %4d  +%s\n", count, $0 }'
     fi
     rm -f "$tags_tmp"
 }
@@ -936,16 +977,24 @@ check_tasks() {
         }
 
         invalid=$(
-            awk 'NR == 1 { for (i=1; i<=NF; i++) if ($i ~ /^#/ && $i !~ /^#[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$/) print $i }' "$file"
+            awk 'NR == 1 { for (i=1; i<=NF; i++) if ($i ~ /^\+/ && $i !~ /^\+[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$/) print $i }' "$file"
         )
         for tag in $invalid; do
             printf 'invalid tag: [%s] %s\n' "$id" "$tag"
             issues=$((issues + 1))
         done
 
+        legacy=$(
+            awk 'NR == 1 { for (i=1; i<=NF; i++) if ($i ~ /^#[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$/) print $i }' "$file"
+        )
+        for tag in $legacy; do
+            printf 'unsupported legacy tag: [%s] %s (use +%s)\n' "$id" "$tag" "${tag#\#}"
+            issues=$((issues + 1))
+        done
+
         dup=$(_get_tags "$file" | sort | uniq -d)
         for tag in $dup; do
-            printf 'duplicate tag: [%s] #%s\n' "$id" "$tag"
+            printf 'duplicate tag: [%s] +%s\n' "$id" "$tag"
             issues=$((issues + 1))
         done
 
@@ -972,10 +1021,10 @@ check_tasks() {
         for type in parent depends link; do
             for target in $(_get_tag_values "$type" "$file"); do
                 if [ "$target" = "$id" ]; then
-                    printf 'self relation: [%s] #%s:%s\n' "$id" "$type" "$target"
+                    printf 'self relation: [%s] +%s:%s\n' "$id" "$type" "$target"
                     issues=$((issues + 1))
                 elif ! _task_exists "$target"; then
-                    printf 'broken relation: [%s] #%s:%s\n' "$id" "$type" "$target"
+                    printf 'broken relation: [%s] +%s:%s\n' "$id" "$type" "$target"
                     issues=$((issues + 1))
                 fi
             done
