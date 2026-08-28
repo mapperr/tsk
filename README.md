@@ -16,64 +16,98 @@ Clone the repo and copy or link `tsk` into your PATH.
 ## Usage
 
 ```
-Usage [v0.5.0]:
+Usage [v0.6.1]:
     tsk l [filters..]
         shows the task list, eventually filtered
-        filters are grep patterns, and they are applied sequentially,
-        you can also start a pattern with a '-' to generate a 'grep -v' filter
+        filters are grep patterns applied sequentially; prefix a pattern with '-'
+        to exclude it. A filter in the form '#tag' matches an exact tag.
 
-    tsk ll [filter]
-        shows the task list, eventually filtered searching in tasks body
-        you can pipe in the result of another tsk l to narrow the search
+    tsk ll [filters..]
+        searches only in task bodies, applying filters sequentially
+        you can pipe in the result of another 'tsk l' to narrow the search
 
     tsk a <title and tags>
-        adds a new task, you can pipe in the task body, e.g.:
-        echo 'develop some web application' | tsk a Do something #dev #due:tomorrow
+        adds a new task; the task body can be piped on stdin, e.g.:
+        echo 'develop some web application' | tsk a 'Do something #dev #due:tomorrow'
+        relative due dates are normalized only by the 'tsk due' command
 
-    tsk d [filters]
-        deletes tasks
-        you can pipe in a list of task filtered from tsk l: this way there is NO CONFIRMATION!
+    tsk d [--force] [filters..]
+        deletes tasks. Piped selections are not confirmed.
+        deletion is refused when other tasks reference the selected tasks,
+        unless --force is used.
 
-    tsk e [filters]
-        opens a task in the $EDITOR
-        if no filter is passed, then opens the last created task
-        you can pipe in one task filtered from tsk l
+    tsk e [filters..]
+        opens exactly one task in $EDITOR
+        if no filter is passed, opens the last created task
+        you can pipe in one task filtered from 'tsk l'
 
-    tsk s [filters]
-    tsk ss [filters]
-        shows the tasks to stdout
-        you can pipe in a list of tasks filtered from tsk l
-        using ss forces the use of the cat command, useful if you want to copy a task:
-        tsk ss mytask | tsk a mytask-copy ; tsk e
+    tsk s [filters..]
+    tsk ss [filters..]
+        shows tasks to stdout. 'ss' forces plain cat output.
+        you can pipe in a list filtered from 'tsk l'
 
-    tsk t <tags changes>...
-        changes tags to the list of tasks piped in
-        it works on the task list you pipe in from tsk l
-        the tag change syntax is '-tag' to remove a tag and '+tag' to add it
+    tsk t <tag changes>...
+        changes tags on the task list piped on stdin
+        syntax: '+tag' to add, '-tag' to remove
+
+    tsk done [filters..]       (alias: c)
+        marks selected tasks as done
+    tsk open [filters..]       (alias: u)
+        removes the done tag from selected tasks
+    tsk due <date|-> [filters..]
+        sets a normalized due date on selected tasks; '-' removes it
+        date accepts GNU date expressions such as 'tomorrow' or 'next monday'
+
+    tsk link <parent|depends|link> <target filters..>
+        adds a relation from tasks piped on stdin to exactly one target task
+        'related' can be used as an alias for relation type 'link'
+    tsk unlink <parent|depends|link> [target filters..]
+        removes a relation from tasks piped on stdin
+        for parent, omitting the target removes the current parent
+
+    tsk i [filters..]
+        shows one task together with parents, children, dependencies,
+        blockers and related tasks
+    tsk tree [filters..]
+        shows the parent/child hierarchy; without filters starts from roots
+    tsk r [filters..]
+        prints an overview of open/done, due, blocked and root tasks and tags
+        for the selected tasks; accepts the same filters and piped selections as 'l'
+    tsk check
+        checks task metadata and relation integrity
 
     tsk g [git cmds/args]
         executes git commands in the tsk directory, e.g.: tsk g pull
     tsk y [commit msg]
-        executes git add, commit -m 'commit msg' (or 'sync' by default),
-        pull and push in the tsk directory
+        git add/commit, then pull --rebase and push in the tsk directory
+
     tsk h
         shows extended help
 
 tsk files:
-    a tsk file contains the task title and task tags in the first line, with tags following the title,
-    and the task body from the second line on.
-    A tsk file is named with the timestamp the task was created and the task id.
+    A task is one Markdown file. The first line contains the task title followed
+    by tags; the body starts on the second line. Files are named with the task
+    creation timestamp and a short random suffix.
 
 tags:
-    tasks can be tagged. A 'tag' is a string in the form of #value or #key:value
-    where key and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces.
-    those tags will help searching, task categorization, reports or can be used by external integrations.
+    A tag is '#value' or '#key:value'. Components may contain letters, numbers,
+    underscores '_' and dashes '-'. Some tags have conventional semantics:
+
+        #done             completed task
+        #due:YYYY-MM-DD           due date
+        #parent:<task-id>         hierarchy (one parent per task)
+        #depends:<task-id>        dependency
+        #link:<task-id>           generic relation
+
+    Backlinks, children, blockers and derived states are not stored: they are
+    calculated from these tags.
 
 env vars:
-    - TSK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: unset]
-    - TSK_DIR: the directory containing your tasks [default: $HOME/.tsk, cur: $HOME/.tsk]
-    - TSK_CATCMD: command to print tasks to stdout. tasks content is pipe-in the command
-      (if unset, mdcat is used, falling back to cat) [default: unset, cur: ]
+    - TSK_DEBUG: show debug information [default: unset, cur: unset]
+    - TSK_DIR: task directory [default: $HOME/.tsk, cur: $HOME/.tsk]
+    - TSK_CATCMD: command used to render a task. Task content is piped to it
+      (default: mdcat when available, otherwise cat) [cur: unset]
+    - TSK_DONE_TAG: tag used for completed tasks [default: done, cur: done]
 ```
 
 ## References and related projects

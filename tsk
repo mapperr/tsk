@@ -1,221 +1,1054 @@
-#! /bin/sh
-version="0.5.0"
+#!/bin/sh
+
+version="0.6.1"
 tskdir="${TSK_DIR:-$HOME/.tsk}"
 editor="${EDITOR:-vi}"
-tmpdir="$TMPDIR:-/tmp"
+tmpdir="${TMPDIR:-/tmp}"
 tskfile_ext="tsk.md"
-TSK_DONE_TAG=${TSK_DONE_TAG:-done}
+TSK_DONE_TAG="${TSK_DONE_TAG:-done}"
 
 usage() {
-    s="$(basename $0)"
-    printf "Usage [v$version]:
+    s="$(basename "$0")"
+    cat <<EOF_USAGE
+Usage [v$version]:
     $s l [filters..]
         shows the task list, eventually filtered
-        filters are grep patterns, and they are applied sequentially,
-        you can also start a pattern with a '-' to generate a 'grep -v' filter
+        filters are grep patterns applied sequentially; prefix a pattern with '-'
+        to exclude it. A filter in the form '#tag' matches an exact tag.
 
-    $s ll [filter]
-        shows the task list, eventually filtered searching in tasks body
-        you can pipe in the result of another $s l to narrow the search
+    $s ll [filters..]
+        searches only in task bodies, applying filters sequentially
+        you can pipe in the result of another '$s l' to narrow the search
 
     $s a <title and tags>
-        adds a new task, you can pipe in the task body, e.g.:
-        echo 'develop some web application' | $s a Do something #dev #due:tomorrow
+        adds a new task; the task body can be piped on stdin, e.g.:
+        echo 'develop some web application' | $s a 'Do something #dev #due:tomorrow'
+        relative due dates are normalized only by the '$s due' command
 
-    $s d [filters]
-        deletes tasks
-        you can pipe in a list of task filtered from $s l: this way there is NO CONFIRMATION!
+    $s d [--force] [filters..]
+        deletes tasks. Piped selections are not confirmed.
+        deletion is refused when other tasks reference the selected tasks,
+        unless --force is used.
 
-    $s e [filters]
-        opens a task in the \$EDITOR
-        if no filter is passed, then opens the last created task
-        you can pipe in one task filtered from $s l
+    $s e [filters..]
+        opens exactly one task in \$EDITOR
+        if no filter is passed, opens the last created task
+        you can pipe in one task filtered from '$s l'
 
-    $s s [filters]
-    $s ss [filters]
-        shows the tasks to stdout
-        you can pipe in a list of tasks filtered from $s l
-        using ss forces the use of the cat command, useful if you want to copy a task:
-        $s ss mytask | $s a mytask-copy ; $s e
+    $s s [filters..]
+    $s ss [filters..]
+        shows tasks to stdout. 'ss' forces plain cat output.
+        you can pipe in a list filtered from '$s l'
 
-    $s t <tags changes>...
-        changes tags to the list of tasks piped in
-        it works on the task list you pipe in from $s l
-        the tag change syntax is '-tag' to remove a tag and '+tag' to add it
+    $s t <tag changes>...
+        changes tags on the task list piped on stdin
+        syntax: '+tag' to add, '-tag' to remove
+
+    $s done [filters..]       (alias: c)
+        marks selected tasks as done
+    $s open [filters..]       (alias: u)
+        removes the done tag from selected tasks
+    $s due <date|-> [filters..]
+        sets a normalized due date on selected tasks; '-' removes it
+        date accepts GNU date expressions such as 'tomorrow' or 'next monday'
+
+    $s link <parent|depends|link> <target filters..>
+        adds a relation from tasks piped on stdin to exactly one target task
+        'related' can be used as an alias for relation type 'link'
+    $s unlink <parent|depends|link> [target filters..]
+        removes a relation from tasks piped on stdin
+        for parent, omitting the target removes the current parent
+
+    $s i [filters..]
+        shows one task together with parents, children, dependencies,
+        blockers and related tasks
+    $s tree [filters..]
+        shows the parent/child hierarchy; without filters starts from roots
+    $s r [filters..]
+        prints an overview of open/done, due, blocked and root tasks and tags
+        for the selected tasks; accepts the same filters and piped selections as 'l'
+    $s check
+        checks task metadata and relation integrity
 
     $s g [git cmds/args]
-        executes git commands in the tsk directory, e.g.: tsk g pull
+        executes git commands in the tsk directory, e.g.: $s g pull
     $s y [commit msg]
-        executes git add, commit -m 'commit msg' (or 'sync' by default),
-        pull and push in the tsk directory
+        git add/commit, then pull --rebase and push in the tsk directory
+
     $s h
         shows extended help
-"
+EOF_USAGE
 }
+
 helpmsg() {
-    usage; echo
-    printf "tsk files:
-    a tsk file contains the task title and task tags in the first line, with tags following the title,
-    and the task body from the second line on.
-    A tsk file is named with the timestamp the task was created and the task id.
+    usage
+    cat <<EOF_HELP
+
+tsk files:
+    A task is one Markdown file. The first line contains the task title followed
+    by tags; the body starts on the second line. Files are named with the task
+    creation timestamp and a short random suffix.
 
 tags:
-    tasks can be tagged. A 'tag' is a string in the form of #value or #key:value
-    where key and value can contain only letters, numbers, undescores '_' and dashes '-', without blank spaces.
-    those tags will help searching, task categorization, reports or can be used by external integrations.
+    A tag is '#value' or '#key:value'. Components may contain letters, numbers,
+    underscores '_' and dashes '-'. Some tags have conventional semantics:
+
+        #$TSK_DONE_TAG             completed task
+        #due:YYYY-MM-DD           due date
+        #parent:<task-id>         hierarchy (one parent per task)
+        #depends:<task-id>        dependency
+        #link:<task-id>           generic relation
+
+    Backlinks, children, blockers and derived states are not stored: they are
+    calculated from these tags.
 
 env vars:
-    - TSK_DEBUG: set it to whatever value to show debug informations [default: unset, cur: ${TSK_DEBUG:-unset}]
-    - TSK_DIR: the directory containing your tasks [default: \$HOME/.tsk, cur: $tskdir]
-    - TSK_CATCMD: command to print tasks to stdout. tasks content is pipe-in the command
-      (if unset, mdcat is used, falling back to cat) [default: unset, cur: $TSK_CATCMD]
-"
+    - TSK_DEBUG: show debug information [default: unset, cur: ${TSK_DEBUG:-unset}]
+    - TSK_DIR: task directory [default: \$HOME/.tsk, cur: $tskdir]
+    - TSK_CATCMD: command used to render a task. Task content is piped to it
+      (default: mdcat when available, otherwise cat) [cur: ${TSK_CATCMD:-unset}]
+    - TSK_DONE_TAG: tag used for completed tasks [default: done, cur: $TSK_DONE_TAG]
+EOF_HELP
 }
-_err() { printf "%s: error: %s\n" "$(basename "$0")" "$1" >&2; exit 1; }
-_warn() { printf "%s: warn: %s\n" "$(basename "$0")" "$1" >&2; }
-_info() { printf "%s: %s\n" "$(basename "$0")" "$1" >&2; }
-_dbg() { [ "$TSK_DEBUG" ] && printf "%s: debug: %s\n" "$(basename "$0")" "$1" >&2; return 0; }
+
+_err()  { printf '%s: error: %s\n' "$(basename "$0")" "$1" >&2; exit 1; }
+_warn() { printf '%s: warn: %s\n'  "$(basename "$0")" "$1" >&2; }
+_info() { printf '%s: %s\n'        "$(basename "$0")" "$1" >&2; }
+_dbg()  { [ -n "${TSK_DEBUG:-}" ] && printf '%s: debug: %s\n' "$(basename "$0")" "$1" >&2; return 0; }
+
 _rand_chars() { LC_ALL=C tr -dc "$2" </dev/urandom | dd ibs=1 obs=1 count="$1" 2>/dev/null; }
-_mktemp() { tmpdir=/dev/shm; [ -w /dev/shm ] || tmpdir=${TMPDIR:-/tmp}; echo "mkstemp($tmpdir/XXXXXXXX)" | m4; }
-_epoch() { date '+%s'; }
-_now() { date '+%Y%m%d%H%M%S'; }
-_now_date() { date '+%Y%m%d'; }
+_now() { date '+%Y%m%d%H%M%S%3N'; }
 _today() { date '+%Y-%m-%d'; }
-_validate_date() { date -d "$(printf "%s" "$1")" >/dev/null 2>&1;}
-_create_task_filename() { printf '%s-%s.%s' "$(_now_date)" "$(_rand_chars 4 'A-Za-z0-9')" "$tskfile_ext";}
-_no_tasks() { ! ls "$tskdir"/*."$tskfile_ext" >/dev/null 2>&1;}
-_get_abs_tskfile_list() { [ ! -t 0 ] && set -- "$(cat)"; echo "$1" | cut -d: -f1 | xargs -I% echo "$tskdir/%.$tskfile_ext";}
-_print_task_list() {
-    list="$1"
-    [ -z "$list" ] && list=$tskdir/*.$tskfile_ext
-    { for t in $list; do
-        [ -f "$t" ] || continue
-        { title="$(head -n1 "$t")"; echo "$(basename "${t%.$tskfile_ext}"): $title"; } & done; wait
-    } | sort -n
+_normalize_date() { date -d "$1" '+%Y-%m-%d' 2>/dev/null; }
+_validate_date() { date -d "$1" >/dev/null 2>&1; }
+
+_ensure_dir() { mkdir -p "$tskdir" || _err "cannot create task directory [$tskdir]"; }
+_no_tasks() {
+    for f in "$tskdir"/*."$tskfile_ext"; do
+        [ -f "$f" ] && return 1
+    done
+    return 0
 }
-_get_title() { tskfile="$1";l1="$(head -n1 "$tskfile")"; ! printf "$l1" | grep '#'>/dev/null && printf "$l1" && return 0; printf "$l1"|cut -d'#' -f1;}
-_get_tags() { tskfile="$1";l1="$(head -n1 "$tskfile")"; ! printf "$l1" | grep '#'>/dev/null && printf "" && return 0; printf '#'; printf "$l1"|cut -d'#' -f2-;}
-_print_task() {
-    title="$(_get_title "$1")"
-    tags="$(_get_tags "$1")"
-    pcmd=cat; command -v mdcat>/dev/null && pcmd=mdcat
-    pcmd="${TSK_CATCMD:-$pcmd}"
+
+_create_task_id() {
+    while :; do
+        id="$(_now)-$(_rand_chars 4 'A-Za-z0-9')"
+        [ ! -e "$tskdir/$id.$tskfile_ext" ] && { printf '%s\n' "$id"; return 0; }
+    done
+}
+
+_task_path() { printf '%s/%s.%s\n' "$tskdir" "$1" "$tskfile_ext"; }
+_task_exists() { [ -n "$1" ] && [ -f "$tskdir/$1.$tskfile_ext" ]; }
+_valid_id() { printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_-]*$'; }
+
+_task_ids() {
+    for f in "$tskdir"/*."$tskfile_ext"; do
+        [ -f "$f" ] || continue
+        b="$(basename "$f")"
+        printf '%s\n' "${b%.$tskfile_ext}"
+    done | LC_ALL=C sort
+}
+
+_stdin_available() {
+    [ -p /dev/stdin ] || [ -f /dev/stdin ]
+}
+
+_selection_ids_from_stdin() {
+    while IFS= read -r line; do
+        id=${line%%:*}
+        # Also accept a plain ID surrounded by whitespace.
+        id=$(printf '%s' "$id" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [ -n "$id" ] || continue
+        if ! _valid_id "$id" || ! _task_exists "$id"; then
+            _warn "ignoring invalid task selection [$id]"
+            continue
+        fi
+        printf '%s\n' "$id"
+    done | awk '!seen[$0]++'
+}
+
+_get_title() {
+    awk '
+        NR == 1 {
+            out = ""
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^#[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$/) continue
+                out = out (out == "" ? "" : " ") $i
+            }
+            print out
+            exit
+        }
+    ' "$1"
+}
+
+_get_tags() {
+    awk '
+        NR == 1 {
+            for (i = 1; i <= NF; i++)
+                if ($i ~ /^#[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$/)
+                    print substr($i, 2)
+            exit
+        }
+    ' "$1"
+}
+
+_get_tag_values() {
+    prefix=$1
+    _get_tags "$2" | awk -F: -v p="$prefix" '$1 == p && NF >= 2 { sub(/^[^:]*:/, ""); print }'
+}
+
+_has_tag() {
+    wanted=${1#\#}
+    _get_tags "$2" | grep -F -x -q "$wanted"
+}
+
+_is_done_id() {
+    _has_tag "$TSK_DONE_TAG" "$(_task_path "$1")"
+}
+
+_render_task_line() {
+    id=$1
+    printf '%s: %s' "$id" "$(_get_title "$(_task_path "$id")")"
+    for tag in $(_get_tags "$(_task_path "$id")"); do
+        printf ' #%s' "$tag"
+    done
+    printf '\n'
+}
+
+_render_ids() {
+    for id in $1; do
+        _task_exists "$id" && _render_task_line "$id"
+    done
+}
+
+_id_in_list() {
+    wanted=$1
+    shift
+    for id in $*; do [ "$id" = "$wanted" ] && return 0; done
+    return 1
+}
+
+_filter_ids() {
+    ids=$1
+    shift
+    for filter in "$@"; do
+        invert=0
+        pattern=$filter
+        case "$pattern" in
+            -*) invert=1; pattern=${pattern#-} ;;
+        esac
+
+        [ -n "$pattern" ] || continue
+        next=''
+
+        case "$pattern" in
+            \#*)
+                tag=${pattern#\#}
+                _dbg "filtering by exact tag [$tag], invert=$invert"
+                for id in $ids; do
+                    if _has_tag "$tag" "$(_task_path "$id")"; then match=0; else match=1; fi
+                    if { [ "$invert" -eq 0 ] && [ "$match" -eq 0 ]; } ||
+                       { [ "$invert" -eq 1 ] && [ "$match" -ne 0 ]; }; then
+                        next="${next}${next:+
+}$id"
+                    fi
+                done
+                ;;
+            *)
+                _dbg "filtering by pattern [$pattern], invert=$invert"
+                for id in $ids; do
+                    line=$(_render_task_line "$id")
+                    if printf '%s\n' "$line" | grep -i -e "$pattern" >/dev/null 2>&1; then match=0; else match=1; fi
+                    if { [ "$invert" -eq 0 ] && [ "$match" -eq 0 ]; } ||
+                       { [ "$invert" -eq 1 ] && [ "$match" -ne 0 ]; }; then
+                        next="${next}${next:+
+}$id"
+                    fi
+                done
+                ;;
+        esac
+        ids=$next
+    done
+    printf '%s\n' "$ids" | sed '/^$/d'
+}
+
+_select_ids() {
+    if _stdin_available; then
+        base=$(_selection_ids_from_stdin)
+    else
+        base=$(_task_ids)
+    fi
+    _filter_ids "$base" "$@"
+}
+
+_select_ids_no_stdin() {
+    _filter_ids "$(_task_ids)" "$@"
+}
+
+_require_selection() {
+    ids=$1
+    [ -n "$ids" ] || _err "no task found"
+}
+
+_require_one() {
+    ids=$1
+    _require_selection "$ids"
+    count=$(printf '%s\n' "$ids" | sed '/^$/d' | wc -l | tr -d ' ')
+    [ "$count" -eq 1 ] || {
+        _warn "task list is:"
+        _render_ids "$ids" >&2
+        _err "filter the list to obtain exactly one task"
+    }
+    printf '%s\n' "$ids"
+}
+
+_resolve_one() {
+    [ "$#" -gt 0 ] || _err "missing target task"
+    if [ "$#" -eq 1 ] && _task_exists "$1"; then
+        printf '%s\n' "$1"
+        return 0
+    fi
+    _require_one "$(_select_ids_no_stdin "$@")"
+}
+
+_write_first_line() {
+    file=$1
+    title=$2
+    tags=$3
+    tmp=$(mktemp "$tmpdir/tsk.XXXXXX") || _err "cannot create temporary file"
     {
-        echo "# $title"
-        [ -n "$tags" ] && echo "\`$tags\`"
-        cat "$1" | sed '1d'
+        printf '%s' "$title"
+        for tag in $tags; do printf ' #%s' "$tag"; done
+        printf '\n'
+        sed -n '2,$p' "$file"
+    } >"$tmp" || { rm -f "$tmp"; _err "cannot update [$file]"; }
+    cat "$tmp" >"$file" || { rm -f "$tmp"; _err "cannot update [$file]"; }
+    rm -f "$tmp"
+}
+
+_valid_tag() {
+    printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$'
+}
+
+_add_tag_file() {
+    file=$1
+    tag=${2#\#}
+    _valid_tag "$tag" || _err "invalid tag [$tag]"
+    _has_tag "$tag" "$file" && return 0
+    title=$(_get_title "$file")
+    tags=$(_get_tags "$file")
+    tags="${tags}${tags:+
+}$tag"
+    _write_first_line "$file" "$title" "$tags"
+}
+
+_remove_tag_file() {
+    file=$1
+    tag=${2#\#}
+    title=$(_get_title "$file")
+    tags=$(_get_tags "$file" | awk -v t="$tag" '$0 != t')
+    _write_first_line "$file" "$title" "$tags"
+}
+
+_remove_tag_prefix_file() {
+    file=$1
+    prefix=$2
+    title=$(_get_title "$file")
+    tags=$(_get_tags "$file" | awk -F: -v p="$prefix" '$1 != p')
+    _write_first_line "$file" "$title" "$tags"
+}
+
+_print_task() {
+    title=$(_get_title "$1")
+    tags=$(_get_tags "$1")
+    pcmd=cat
+    command -v mdcat >/dev/null 2>&1 && pcmd=mdcat
+    pcmd=${TSK_CATCMD:-$pcmd}
+    {
+        printf '# %s\n' "$title"
+        if [ -n "$tags" ]; then
+            printf '`'
+            first=1
+            for tag in $tags; do
+                [ "$first" -eq 0 ] && printf ' '
+                printf '#%s' "$tag"
+                first=0
+            done
+            printf '`\n'
+        fi
+        sed -n '2,$p' "$1"
     } | $pcmd
 }
+
 list_tasks() {
-    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
-    starting_list="$(_print_task_list)"
-    [ ! -t 0 ] && starting_list="$(cat)"
-    task_list="$starting_list"
-    for g in "$@"; do
-        if printf '%s' "$g" | grep '^-'>/dev/null; then
-            gp="$(printf '%s' "$g" | sed 's/^\-//')"
-            _dbg "exluding pattern: $gp"
-            task_list="$(echo "$task_list" | grep -iv "$gp")"
-        else _dbg "filtering by pattern: $g"
-            task_list="$(echo "$task_list" | grep -i "$g")"; fi
-        _dbg "task list: $task_list"
-    done
-    echo "$task_list"
+    _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
+    ids=$(_select_ids "$@")
+    [ -n "$ids" ] && _render_ids "$ids"
 }
+
 search_tasks() {
-    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
-    [ ! -t 0 ] && _print_task_list "$(cat | _get_abs_tskfile_list | xargs -I% grep -il "${*:-.}" % | sort -u)"
-    [ -t 0 ] && _print_task_list "$(for f in "$tskdir/"*".$tskfile_ext"; do echo "$f"; done | xargs -I% grep -il "${*:-.}" % | sort -u)"
+    _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
+    if _stdin_available; then ids=$(_selection_ids_from_stdin); else ids=$(_task_ids); fi
+
+    for filter in "$@"; do
+        invert=0
+        pattern=$filter
+        case "$pattern" in -*) invert=1; pattern=${pattern#-} ;; esac
+        [ -n "$pattern" ] || continue
+        next=''
+        for id in $ids; do
+            file=$(_task_path "$id")
+            if sed -n '2,$p' "$file" | grep -i -e "$pattern" >/dev/null 2>&1; then match=0; else match=1; fi
+            if { [ "$invert" -eq 0 ] && [ "$match" -eq 0 ]; } ||
+               { [ "$invert" -eq 1 ] && [ "$match" -ne 0 ]; }; then
+                next="${next}${next:+
+}$id"
+            fi
+        done
+        ids=$next
+    done
+    [ -n "$ids" ] && _render_ids "$ids"
 }
+
 show_tasks() {
-    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
-    [ -z "$1" ] && [ -t 0 ] && return 0
-    [ ! -t 0 ] && tasklist="$(cat | list_tasks "$*")"
-    [ -t 0 ] && tasklist="$(list_tasks "$*")"
-    tskfiles="$(echo "$tasklist" | _get_abs_tskfile_list)"
-    for t in $tskfiles; do
-        echo "[$(basename "${t%.$tskfile_ext}")]" >&2
-        _print_task "$t"
-        echo "---" >&2
+    _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
+    if ! _stdin_available && [ "$#" -eq 0 ]; then return 0; fi
+    ids=$(_select_ids "$@")
+    _require_selection "$ids"
+    for id in $ids; do
+        file=$(_task_path "$id")
+        printf '[%s]\n' "$id" >&2
+        _print_task "$file"
+        printf '%s\n' '---' >&2
     done
 }
+
 tag_tasks() {
-    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
-    ( [ -z "$1" ] || [ -t 0 ] ) && return 0
-    [ ! -t 0 ] && tasklist="$(cat)"
-    tskfiles="$(echo "$tasklist" | _get_abs_tskfile_list)"
-    for t in $tskfiles; do
-        for tc in "$@"; do
-            echo "$tc" | grep -e '^-' -e '^+'>/dev/null || continue
-            tc="$(echo "$tc" | sed 's/^\(\-\)#\{1,\}/\1/' | sed 's/^\(\+\)#\{1,\}/\1/')"
-            _dbg "working on tag change: $tc"
-            ct="$(echo "$tc" | sed 's/^+\{1,\}//' | sed 's/^\-\{1,\}//')"
-            if echo "$tc" | grep '^+'>/dev/null &&
-            ! head -n1 "$t" | grep " #$ct\b">/dev/null; then
-                sed -i "1s/\(.*\)/\1 #$ct/" "$t"; _dbg "add tag: $ct"; fi
-            if echo "$tc" | grep '^-'>/dev/null; then
-                sed -i "1s/ #$ct//" "$t"; sed -i "1s/#$ct //" "$t"; 
-                _dbg "remove tag: $ct"; fi
+    _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
+    [ "$#" -gt 0 ] || return 0
+    _stdin_available || _err "tag changes require a task list on stdin"
+    ids=$(_selection_ids_from_stdin)
+    _require_selection "$ids"
+
+    for change in "$@"; do
+        case "$change" in
+            +*|-*) ;;
+            *) _warn "ignoring invalid tag change [$change]"; continue ;;
+        esac
+        op=$(printf '%s' "$change" | cut -c1)
+        tag=${change#?}
+        while [ "${tag#\#}" != "$tag" ]; do tag=${tag#\#}; done
+        _valid_tag "$tag" || _err "invalid tag [$tag]"
+        for id in $ids; do
+            file=$(_task_path "$id")
+            if [ "$op" = '+' ]; then _add_tag_file "$file" "$tag"; else _remove_tag_file "$file" "$tag"; fi
         done
     done
     _info "tags updated"
 }
-edit_task() {
-    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
-    if [ -z "$1" ] && [ -t 0 ]; then cd "$tskdir" && $EDITOR "$tskdir/$(list_tasks | tail -n1 | cut -d: -f1).$tskfile_ext"; return $?; fi
-    [ ! -t 0 ] && tasklist="$(cat | list_tasks "$*")"
-    [ -t 0 ] && tasklist="$(list_tasks "$*")"
-	{ [ -z "$tasklist" ] || [ "$(echo "$tasklist" | wc -l)" -ne 1 ]; } &&
-        _warn "task list is:" && echo "$tasklist" 1>&2 && _err "filter the list to obtain only 1 task"
-    tskfile="$(echo "$tasklist" | _get_abs_tskfile_list)"
-    cd "$tskdir" && $EDITOR "$tskfile"
-}
-del_tasks() {
-    _no_tasks && _warn "no tasks in [$tskdir]" && return 1
-    [ ! -t 0 ] && tasklist="$(cat | list_tasks "$*")"
-    [ -t 0 ] && tasklist="$(list_tasks "$*")"
-    [ -z "$tasklist" ] && _err "no task found"
-    tskfiles="$(echo "$tasklist" | _get_abs_tskfile_list)"
-    printf "\n%s\n\n" "$tasklist"
-    if [ -t 0 ]; then
-        printf "delete tasks (y/n)? "
-        read -r c
-        [ "$c" = "y" ] || return 1
+
+add_task() {
+    [ "$#" -gt 0 ] || { usage; return 1; }
+    _ensure_dir
+    body=''
+    _stdin_available && body=$(cat)
+    title=$(printf '%s' "$*" | sed 's/[[:space:]]*$//')
+    [ -n "$title" ] || _err "empty task title"
+    id=$(_create_task_id)
+    file=$(_task_path "$id")
+    {
+        printf '%s\n\n' "$title"
+        if [ -n "$body" ]; then printf '%s\n' "$body"; fi
+    } >"$file" || _err "cannot create task [$file]"
+
+    dues=$(_get_tag_values due "$file")
+    due_count=$(printf '%s\n' "$dues" | sed '/^$/d' | wc -l | tr -d ' ')
+    if [ "$due_count" -gt 1 ]; then
+        rm -f "$file"
+        _err "a task can have only one due date"
+    elif [ "$due_count" -eq 1 ]; then
+        due=$(printf '%s\n' "$dues" | head -n 1)
+        normalized=$(_normalize_date "$due") || { rm -f "$file"; _err "invalid due date [$due]"; }
+        _remove_tag_prefix_file "$file" due
+        _add_tag_file "$file" "due:$normalized"
     fi
-    rm -f $tskfiles
+
+    _info "created task $id: $(_get_title "$file")"
+}
+
+edit_task() {
+    _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
+    if ! _stdin_available && [ "$#" -eq 0 ]; then
+        id=$(_task_ids | tail -n 1)
+    else
+        id=$(_require_one "$(_select_ids "$@")")
+    fi
+    cd "$tskdir" || _err "cannot enter [$tskdir]"
+    "$editor" "$(_task_path "$id")"
+}
+
+_references_to() {
+    target=$1
+    exclude_ids=${2:-}
+    for src in $(_task_ids); do
+        _id_in_list "$src" $exclude_ids && continue
+        file=$(_task_path "$src")
+        for type in parent depends link; do
+            _has_tag "$type:$target" "$file" && printf '%s:%s\n' "$src" "$type"
+        done
+    done
+}
+
+del_tasks() {
+    _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
+    force=0
+    if [ "${1:-}" = '--force' ]; then force=1; shift; fi
+    piped=0
+    _stdin_available && piped=1
+    ids=$(_select_ids "$@")
+    _require_selection "$ids"
+
+    if [ "$force" -eq 0 ]; then
+        blocked=0
+        for id in $ids; do
+            refs=$(_references_to "$id" "$ids")
+            if [ -n "$refs" ]; then
+                blocked=1
+                printf 'cannot delete [%s] %s; referenced by:\n' "$id" "$(_get_title "$(_task_path "$id")")" >&2
+                printf '%s\n' "$refs" | while IFS=: read -r src type; do
+                    printf '  %s from [%s] %s\n' "$type" "$src" "$(_get_title "$(_task_path "$src")")" >&2
+                done
+            fi
+        done
+        [ "$blocked" -eq 0 ] || _err "remove references first, or use --force"
+    fi
+
+    printf '\n'
+    _render_ids "$ids"
+    printf '\n'
+    if [ "$piped" -eq 0 ] && [ -t 0 ]; then
+        printf 'delete tasks (y/n)? '
+        read -r c
+        [ "$c" = 'y' ] || return 1
+    fi
+    for id in $ids; do rm -f "$(_task_path "$id")" || _err "cannot delete [$id]"; done
     _info "deleted"
 }
-add_task() {
-    [ -z "$1" ] && usage && return 1
-    body=''; [ ! -t 0 ] && body="$(cat)"
-    title="$(printf "$*" | sed 's/ \{1,\}$//' )"; _dbg "title: [$title]"
-    tskfile="$(_create_task_filename)"
-    echo "$title" >"$tskdir/$tskfile"
-    echo "" >>"$tskdir/$tskfile"
-    echo "$body" >>"$tskdir/$tskfile"
-    _info "created task ${tskfile%.$tskfile_ext}: $title"
+
+_select_for_state_change() {
+    if _stdin_available; then
+        base=$(_selection_ids_from_stdin)
+        _filter_ids "$base" "$@"
+    else
+        [ "$#" -gt 0 ] || _err "specify filters or pipe a task selection"
+        _select_ids_no_stdin "$@"
+    fi
 }
-report() {
-    _warn "to be implemented"
+
+done_tasks() {
+    ids=$(_select_for_state_change "$@")
+    _require_selection "$ids"
+    for id in $ids; do _add_tag_file "$(_task_path "$id")" "$TSK_DONE_TAG"; done
+    _info "marked done"
 }
-main() {
-    cmd="$1"; shift
-    case $cmd in
-        l) list_tasks "$@";;
-        ll) search_tasks "$@";;
-        a) add_task "$@";;
-        d) del_tasks "$@";;
-        t) tag_tasks "$@";;
-        r) report "$@";;
-        e) edit_task "$@";;
-        s) show_tasks "$@";;
-        ss) TSK_CATCMD=cat show_tasks "$@";;
-        h) helpmsg && exit 0;;
-        g) cd "$tskdir" && git "$@";;
-        y) cd "$tskdir" && git add -A && git commit -m "${*:-sync}"; git pull && git push;;
-        run) "$@";;
-        *) if command -v $scriptname-"$cmd">/dev/null; then $scriptname-"$cmd" "$@"; else usage; exit 0; fi;
+
+open_tasks() {
+    ids=$(_select_for_state_change "$@")
+    _require_selection "$ids"
+    for id in $ids; do _remove_tag_file "$(_task_path "$id")" "$TSK_DONE_TAG"; done
+    _info "marked open"
+}
+
+due_tasks() {
+    [ "$#" -gt 0 ] || _err "usage: $(basename "$0") due <date|-> [filters..]"
+    value=$1
+    shift
+    ids=$(_select_for_state_change "$@")
+    _require_selection "$ids"
+
+    if [ "$value" = '-' ]; then
+        for id in $ids; do _remove_tag_prefix_file "$(_task_path "$id")" due; done
+        _info "due date removed"
+        return 0
+    fi
+
+    normalized=$(_normalize_date "$value") || _err "invalid date [$value]"
+    [ -n "$normalized" ] || _err "invalid date [$value]"
+    for id in $ids; do
+        file=$(_task_path "$id")
+        _remove_tag_prefix_file "$file" due
+        _add_tag_file "$file" "due:$normalized"
+    done
+    _info "due date set to $normalized"
+}
+
+_relation_type() {
+    case "$1" in
+        parent|depends|link) printf '%s\n' "$1" ;;
+        related) printf '%s\n' link ;;
+        *) _err "invalid relation type [$1]; expected parent, depends or link" ;;
     esac
 }
-scriptname=$(basename $0)
-[ "$1" ] || { usage; exit 0; } && main "$@"
+
+link_tasks() {
+    [ "$#" -ge 2 ] || _err "usage: $(basename "$0") link <parent|depends|link> <target filters..>"
+    _stdin_available || _err "link requires source tasks on stdin"
+    type=$(_relation_type "$1")
+    shift
+    sources=$(_selection_ids_from_stdin)
+    _require_selection "$sources"
+    target=$(_resolve_one "$@")
+
+    for src in $sources; do
+        [ "$src" != "$target" ] || _err "cannot create a self relation on [$src]"
+        if [ "$type" = parent ] && _would_parent_cycle "$src" "$target"; then
+            _err "parent relation [$src] -> [$target] would create a cycle"
+        fi
+        if [ "$type" = depends ] && _dep_reaches "$target" "$src" ''; then
+            _err "dependency [$src] -> [$target] would create a cycle"
+        fi
+        file=$(_task_path "$src")
+        if [ "$type" = parent ]; then _remove_tag_prefix_file "$file" parent; fi
+        _add_tag_file "$file" "$type:$target"
+    done
+    _info "relation [$type] -> [$target] added"
+}
+
+unlink_tasks() {
+    [ "$#" -ge 1 ] || _err "usage: $(basename "$0") unlink <parent|depends|link> [target filters..]"
+    _stdin_available || _err "unlink requires source tasks on stdin"
+    type=$(_relation_type "$1")
+    shift
+    sources=$(_selection_ids_from_stdin)
+    _require_selection "$sources"
+
+    if [ "$#" -eq 0 ]; then
+        [ "$type" = parent ] || _err "target is required for [$type] relations"
+        for src in $sources; do _remove_tag_prefix_file "$(_task_path "$src")" parent; done
+        _info "parent relation removed"
+        return 0
+    fi
+
+    target=$(_resolve_one "$@")
+    for src in $sources; do _remove_tag_file "$(_task_path "$src")" "$type:$target"; done
+    _info "relation [$type] -> [$target] removed"
+}
+
+_parent_of() {
+    _get_tag_values parent "$(_task_path "$1")" | head -n 1
+}
+
+_children_of() {
+    parent=$1
+    for id in $(_task_ids); do
+        _has_tag "parent:$parent" "$(_task_path "$id")" && printf '%s\n' "$id"
+    done
+}
+
+_dependencies_of() {
+    _get_tag_values depends "$(_task_path "$1")"
+}
+
+_out_links_of() {
+    _get_tag_values link "$(_task_path "$1")"
+}
+
+_backlinks_of_type() {
+    type=$1
+    target=$2
+    for id in $(_task_ids); do
+        _has_tag "$type:$target" "$(_task_path "$id")" && printf '%s\n' "$id"
+    done
+}
+
+_blocking_dependencies() {
+    for dep in $(_dependencies_of "$1"); do
+        if ! _task_exists "$dep"; then
+            printf '!%s\n' "$dep"
+        elif ! _is_done_id "$dep"; then
+            printf '%s\n' "$dep"
+        fi
+    done
+}
+
+_task_ref() {
+    id=$1
+    if ! _task_exists "$id"; then printf '[%s] <missing>\n' "$id"; return; fi
+    if _is_done_id "$id"; then mark=x; else mark=' '; fi
+    printf '[%s] [%s] %s\n' "$mark" "$id" "$(_get_title "$(_task_path "$id")")"
+}
+
+_print_ref_section() {
+    heading=$1
+    ids=$2
+    [ -n "$ids" ] || return 0
+    printf '\n%s:\n' "$heading"
+    for id in $ids; do
+        case "$id" in
+            !*) printf '  [!] [%s] <missing>\n' "${id#!}" ;;
+            *) printf '  '; _task_ref "$id" ;;
+        esac
+    done
+}
+
+info_task() {
+    _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
+    id=$(_require_one "$(_select_ids "$@")")
+    file=$(_task_path "$id")
+    title=$(_get_title "$file")
+    if _is_done_id "$id"; then state=done; else state=open; fi
+    due=$(_get_tag_values due "$file" | head -n 1)
+
+    printf '[%s] %s\n' "$id" "$title"
+    printf 'state: %s\n' "$state"
+    [ -n "$due" ] && printf 'due: %s\n' "$due"
+
+    plain_tags=$(_get_tags "$file" | awk -F: -v d="$TSK_DONE_TAG" '$0 != d && $1 != "due" && $1 != "parent" && $1 != "depends" && $1 != "link" { print "#" $0 }')
+    [ -n "$plain_tags" ] && printf 'tags: %s\n' "$(printf '%s\n' "$plain_tags" | paste -sd' ' -)"
+
+    parent=$(_parent_of "$id")
+    children=$(_children_of "$id")
+    deps=$(_dependencies_of "$id")
+    blocks=$(_backlinks_of_type depends "$id")
+    outgoing=$(_out_links_of "$id")
+    incoming=$(_backlinks_of_type link "$id")
+    related=$(printf '%s\n%s\n' "$outgoing" "$incoming" | sed '/^$/d' | awk '!seen[$0]++')
+
+    _print_ref_section Parent "$parent"
+    _print_ref_section Children "$children"
+    _print_ref_section 'Depends on' "$deps"
+    _print_ref_section Blocks "$blocks"
+    _print_ref_section Related "$related"
+}
+
+_tree_node() (
+    tn_id=$1
+    tn_indent=$2
+    tn_path=$3
+    case " $tn_path " in
+        *" $tn_id "*) printf '%s[!] [%s] cycle\n' "$tn_indent" "$tn_id"; return 0 ;;
+    esac
+    printf '%s' "$tn_indent"
+    _task_ref "$tn_id"
+    for tn_child in $(_children_of "$tn_id"); do
+        _tree_node "$tn_child" "  $tn_indent" "$tn_path $tn_id"
+    done
+)
+
+_subtree_ids() (
+    st_id=$1
+    st_path=$2
+    case " $st_path " in *" $st_id "*) return 0 ;; esac
+    printf '%s\n' "$st_id"
+    for st_child in $(_children_of "$st_id"); do
+        _subtree_ids "$st_child" "$st_path $st_id"
+    done
+)
+
+_subtree_ids_selected() (
+    ss_id=$1
+    ss_selected=$2
+    ss_path=$3
+    case " $ss_path " in *" $ss_id "*) return 0 ;; esac
+    _id_in_list "$ss_id" $ss_selected || return 0
+    printf '%s\n' "$ss_id"
+    for ss_child in $(_children_of "$ss_id"); do
+        _id_in_list "$ss_child" $ss_selected || continue
+        _subtree_ids_selected "$ss_child" "$ss_selected" "$ss_path $ss_id"
+    done
+)
+
+tree_tasks() {
+    _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
+    if [ "$#" -gt 0 ] || _stdin_available; then
+        roots=$(_select_ids "$@")
+        _require_selection "$roots"
+    else
+        roots=''
+        for id in $(_task_ids); do
+            parent=$(_parent_of "$id")
+            [ -z "$parent" ] || ! _task_exists "$parent" || continue
+            roots="${roots}${roots:+
+}$id"
+        done
+    fi
+    [ -n "$roots" ] || _err "no root tasks found; run '$(basename "$0") check' for cycles"
+    for root in $roots; do _tree_node "$root" '' ''; done
+}
+
+report() {
+    _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
+    ids=$(_select_ids "$@")
+    _require_selection "$ids"
+
+    total=0 open=0 done_count=0
+    due_rows=''
+    blocked_rows=''
+    roots=''
+    tags_tmp=$(mktemp "$tmpdir/tsk.tags.XXXXXX") || _err "cannot create temporary file"
+    : >"$tags_tmp"
+    today=$(_today)
+
+    for id in $ids; do
+        total=$((total + 1))
+        file=$(_task_path "$id")
+        if _is_done_id "$id"; then
+            done_count=$((done_count + 1))
+        else
+            open=$((open + 1))
+            due=$(_get_tag_values due "$file" | head -n 1)
+            [ -n "$due" ] && due_rows="${due_rows}${due_rows:+
+}$due|$id"
+            blockers=$(_blocking_dependencies "$id")
+            [ -n "$blockers" ] && blocked_rows="${blocked_rows}${blocked_rows:+
+}$id|$(printf '%s' "$blockers" | paste -sd, -)"
+        fi
+
+        # A report root is relative to the selected set. If a task's parent is
+        # outside the current selection, the task is a root of this report.
+        parent=$(_parent_of "$id")
+        if [ -z "$parent" ] || ! _id_in_list "$parent" $ids; then
+            roots="${roots}${roots:+
+}$id"
+        fi
+
+        _get_tags "$file" | awk -F: -v d="$TSK_DONE_TAG" '$0 != d && $1 != "due" && $1 != "parent" && $1 != "depends" && $1 != "link"' >>"$tags_tmp"
+    done
+
+    printf 'TASKS  total %d  open %d  done %d\n' "$total" "$open" "$done_count"
+
+    if [ -n "$due_rows" ]; then
+        printf '\nDUE:\n'
+        printf '%s\n' "$due_rows" | LC_ALL=C sort | while IFS='|' read -r due id; do
+            if [ "$due" = "$today" ]; then
+                mark='='
+            elif [ "$(date -d "$due" '+%s' 2>/dev/null || printf 0)" -lt "$(date -d "$today" '+%s')" ]; then
+                mark='!'
+            else
+                mark=' '
+            fi
+            printf '  %s %s [%s] %s\n' "$mark" "$due" "$id" "$(_get_title "$(_task_path "$id")")"
+        done
+    fi
+
+    if [ -n "$blocked_rows" ]; then
+        printf '\nBLOCKED:\n'
+        printf '%s\n' "$blocked_rows" | while IFS='|' read -r id deps; do
+            printf '  [%s] %s\n' "$id" "$(_get_title "$(_task_path "$id")")"
+            oldifs=$IFS; IFS=,
+            for dep in $deps; do
+                IFS=$oldifs
+                case "$dep" in
+                    !*) printf '      <- [%s] <missing>\n' "${dep#!}" ;;
+                    *) printf '      <- [%s] %s\n' "$dep" "$(_get_title "$(_task_path "$dep")")" ;;
+                esac
+                IFS=,
+            done
+            IFS=$oldifs
+        done
+    fi
+
+    if [ -n "$roots" ]; then
+        printf '\nROOT TASKS:\n'
+        for id in $roots; do
+            root_open=0
+            root_done=0
+            for sub_id in $(_subtree_ids_selected "$id" "$ids" ''); do
+                if _is_done_id "$sub_id"; then root_done=$((root_done + 1)); else root_open=$((root_open + 1)); fi
+            done
+            printf '  '
+            _task_ref "$id" | sed "s/$/  ($root_open open, $root_done done)/"
+        done
+    fi
+
+    if [ -s "$tags_tmp" ]; then
+        printf '\nTAGS:\n'
+        LC_ALL=C sort "$tags_tmp" | uniq -c | sort -nr | awk '{ count=$1; $1=""; sub(/^ +/, ""); printf "  %4d  #%s\n", count, $0 }'
+    fi
+    rm -f "$tags_tmp"
+}
+
+_parent_cycle_from() {
+    start=$1
+    cur=$start
+    path=" $start "
+    while :; do
+        parent=$(_parent_of "$cur")
+        [ -n "$parent" ] || return 1
+        _task_exists "$parent" || return 1
+        case "$path" in *" $parent "*) return 0 ;; esac
+        path="$path$parent "
+        cur=$parent
+    done
+}
+
+_dep_cycle_walk() (
+    dc_cur=$1
+    dc_path=$2
+    for dc_dep in $(_dependencies_of "$dc_cur"); do
+        _task_exists "$dc_dep" || continue
+        case " $dc_path " in *" $dc_dep "*) return 0 ;; esac
+        _dep_cycle_walk "$dc_dep" "$dc_path $dc_dep" && return 0
+    done
+    return 1
+)
+
+_dep_reaches() (
+    dr_cur=$1
+    dr_target=$2
+    dr_path=$3
+    [ "$dr_cur" = "$dr_target" ] && return 0
+    case " $dr_path " in *" $dr_cur "*) return 1 ;; esac
+    for dr_dep in $(_dependencies_of "$dr_cur"); do
+        _task_exists "$dr_dep" || continue
+        _dep_reaches "$dr_dep" "$dr_target" "$dr_path $dr_cur" && return 0
+    done
+    return 1
+)
+
+_would_parent_cycle() {
+    wp_src=$1
+    wp_target=$2
+    wp_cur=$wp_target
+    while _task_exists "$wp_cur"; do
+        [ "$wp_cur" = "$wp_src" ] && return 0
+        wp_next=$(_parent_of "$wp_cur")
+        [ -n "$wp_next" ] || return 1
+        wp_cur=$wp_next
+    done
+    return 1
+}
+
+check_tasks() {
+    _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
+    issues=0
+    for id in $(_task_ids); do
+        file=$(_task_path "$id")
+
+        if ! _valid_id "$id"; then
+            printf 'invalid task id: [%s]\n' "$id"
+            issues=$((issues + 1))
+        fi
+
+        [ -n "$(_get_title "$file")" ] || {
+            printf 'empty title: [%s]\n' "$id"
+            issues=$((issues + 1))
+        }
+
+        invalid=$(
+            awk 'NR == 1 { for (i=1; i<=NF; i++) if ($i ~ /^#/ && $i !~ /^#[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$/) print $i }' "$file"
+        )
+        for tag in $invalid; do
+            printf 'invalid tag: [%s] %s\n' "$id" "$tag"
+            issues=$((issues + 1))
+        done
+
+        dup=$(_get_tags "$file" | sort | uniq -d)
+        for tag in $dup; do
+            printf 'duplicate tag: [%s] #%s\n' "$id" "$tag"
+            issues=$((issues + 1))
+        done
+
+        parents=$(_get_tag_values parent "$file")
+        parent_count=$(printf '%s\n' "$parents" | sed '/^$/d' | wc -l | tr -d ' ')
+        [ "$parent_count" -le 1 ] || {
+            printf 'multiple parents: [%s]\n' "$id"
+            issues=$((issues + 1))
+        }
+
+        dues=$(_get_tag_values due "$file")
+        due_count=$(printf '%s\n' "$dues" | sed '/^$/d' | wc -l | tr -d ' ')
+        [ "$due_count" -le 1 ] || {
+            printf 'multiple due dates: [%s]\n' "$id"
+            issues=$((issues + 1))
+        }
+        for due in $dues; do
+            if ! printf '%s\n' "$due" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || ! _validate_date "$due"; then
+                printf 'invalid due date: [%s] %s\n' "$id" "$due"
+                issues=$((issues + 1))
+            fi
+        done
+
+        for type in parent depends link; do
+            for target in $(_get_tag_values "$type" "$file"); do
+                if [ "$target" = "$id" ]; then
+                    printf 'self relation: [%s] #%s:%s\n' "$id" "$type" "$target"
+                    issues=$((issues + 1))
+                elif ! _task_exists "$target"; then
+                    printf 'broken relation: [%s] #%s:%s\n' "$id" "$type" "$target"
+                    issues=$((issues + 1))
+                fi
+            done
+        done
+    done
+
+    for id in $(_task_ids); do
+        if _parent_cycle_from "$id"; then
+            printf 'parent cycle reachable from: [%s]\n' "$id"
+            issues=$((issues + 1))
+        fi
+        if _dep_cycle_walk "$id" "$id"; then
+            printf 'dependency cycle reachable from: [%s]\n' "$id"
+            issues=$((issues + 1))
+        fi
+    done
+
+    if [ "$issues" -eq 0 ]; then
+        printf 'ok: no problems found\n'
+        return 0
+    fi
+    printf '%d problem(s) found\n' "$issues" >&2
+    return 1
+}
+
+git_sync() {
+    _ensure_dir
+    (
+        cd "$tskdir" || exit 1
+        git add -A || exit 1
+        if ! git diff --cached --quiet; then
+            git commit -m "${*:-sync}" || exit 1
+        fi
+        git pull --rebase && git push
+    )
+}
+
+main() {
+    cmd=$1
+    shift
+    case "$cmd" in
+        l) list_tasks "$@" ;;
+        ll) search_tasks "$@" ;;
+        a) add_task "$@" ;;
+        d) del_tasks "$@" ;;
+        t) tag_tasks "$@" ;;
+        done|c) done_tasks "$@" ;;
+        open|u) open_tasks "$@" ;;
+        due) due_tasks "$@" ;;
+        link) link_tasks "$@" ;;
+        unlink) unlink_tasks "$@" ;;
+        i|info) info_task "$@" ;;
+        tree) tree_tasks "$@" ;;
+        r|report) report "$@" ;;
+        check) check_tasks "$@" ;;
+        e) edit_task "$@" ;;
+        s) show_tasks "$@" ;;
+        ss) TSK_CATCMD=cat show_tasks "$@" ;;
+        h|help) helpmsg ;;
+        g) _ensure_dir; git -C "$tskdir" "$@" ;;
+        y) git_sync "$@" ;;
+        run) "$@" ;;
+        *)
+            if command -v "$scriptname-$cmd" >/dev/null 2>&1; then
+                "$scriptname-$cmd" "$@"
+            else
+                usage
+                exit 1
+            fi
+            ;;
+    esac
+}
+
+scriptname=$(basename "$0")
+[ "$#" -gt 0 ] || { usage; exit 0; }
+main "$@"
