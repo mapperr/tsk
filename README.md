@@ -16,12 +16,13 @@ Clone the repo and copy or link `tsk` into your PATH.
 ## Usage
 
 ```
-Usage [v0.7.1]:
+Usage [v0.9.0]:
     tsk l [filters..]
         shows the task list, eventually filtered
-        filters are grep patterns applied sequentially; prefix a pattern with '-'
-        to exclude it. A filter in the form '+tag' matches an exact tag;
-        use '-+tag' to exclude an exact tag.
+        filters are applied sequentially; prefix a filter with '-' to exclude it.
+        '+tag' matches an exact tag; '-+tag' excludes it.
+        '@pattern' selects a project/subtree (root plus all descendants);
+        '-@pattern' excludes that subtree.
 
     tsk ll [filters..]
         searches task bodies, applying filters sequentially; '+tag' and '-+tag'
@@ -75,6 +76,10 @@ Usage [v0.7.1]:
     tsk r [filters..]
         prints an overview of open/done, due, blocked and root tasks and tags
         for the selected tasks; accepts the same filters and piped selections as 'l'
+    tsk agenda [filters..]
+        shows overdue, due-today, blocked/waiting and +next tasks
+    tsk portfolio [filters..]  (alias: p)
+        shows +project roots with open, blocked and overdue task counts
     tsk check
         checks task metadata and relation integrity
 
@@ -100,16 +105,22 @@ tags:
         +parent:<task-id>         hierarchy (one parent per task)
         +depends:<task-id>        dependency
         +link:<task-id>           generic relation
+        +project                  project root
+        +next                     actionable next task
+        +waiting                  waiting on something external
 
     Backlinks, children, blockers and derived states are not stored: they are
     calculated from these tags. '+' is the only supported tag sigil.
 
 filters:
-    '+tag' is an exact tag filter. '-+tag' excludes that exact tag. Other filters
-    remain grep patterns and '-pattern' negates them. In 'l' and commands based on
-    its selection they match the rendered task line; in 'll' they match only the
-    task body. Therefore 'work' is a text/pattern search, while '+work' always means
-    exactly tag work.
+    '+tag' is an exact tag filter. '-+tag' excludes that exact tag.
+    '@pattern' finds matching subtree roots and selects each root plus all of its
+    descendants; +project tasks are preferred as roots, falling back to any matching
+    task if no project matches. '-@pattern' excludes the resulting subtree.
+    Other filters remain grep patterns and '-pattern' negates them. In 'l' and
+    commands based on its selection they match the rendered task line; in 'll' they
+    match only the task body. '+tag' and '@pattern' remain metadata/structure filters
+    in 'll'. Filters are applied sequentially.
 
 env vars:
     - TSK_DEBUG: show debug information [default: unset, cur: unset]
