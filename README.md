@@ -16,20 +16,22 @@ Clone the repo and copy or link `tsk` into your PATH.
 ## Usage
 
 ```
-Usage [v0.6.1]:
+Usage [v0.7.1]:
     tsk l [filters..]
         shows the task list, eventually filtered
         filters are grep patterns applied sequentially; prefix a pattern with '-'
-        to exclude it. A filter in the form '#tag' matches an exact tag.
+        to exclude it. A filter in the form '+tag' matches an exact tag;
+        use '-+tag' to exclude an exact tag.
 
     tsk ll [filters..]
-        searches only in task bodies, applying filters sequentially
-        you can pipe in the result of another 'tsk l' to narrow the search
+        searches task bodies, applying filters sequentially; '+tag' and '-+tag'
+        still act as exact metadata tag filters. You can pipe in the result of
+        another 'tsk l' to narrow the search
 
     tsk a <title and tags>
         adds a new task; the task body can be piped on stdin, e.g.:
-        echo 'develop some web application' | tsk a 'Do something #dev #due:tomorrow'
-        relative due dates are normalized only by the 'tsk due' command
+        echo 'develop some web application' | tsk a Do something +dev +due:tomorrow
+        relative due dates are normalized when the task is created
 
     tsk d [--force] [filters..]
         deletes tasks. Piped selections are not confirmed.
@@ -90,17 +92,24 @@ tsk files:
     creation timestamp and a short random suffix.
 
 tags:
-    A tag is '#value' or '#key:value'. Components may contain letters, numbers,
+    A tag is '+value' or '+key:value'. Components may contain letters, numbers,
     underscores '_' and dashes '-'. Some tags have conventional semantics:
 
-        #done             completed task
-        #due:YYYY-MM-DD           due date
-        #parent:<task-id>         hierarchy (one parent per task)
-        #depends:<task-id>        dependency
-        #link:<task-id>           generic relation
+        +done             completed task
+        +due:YYYY-MM-DD           due date
+        +parent:<task-id>         hierarchy (one parent per task)
+        +depends:<task-id>        dependency
+        +link:<task-id>           generic relation
 
     Backlinks, children, blockers and derived states are not stored: they are
-    calculated from these tags.
+    calculated from these tags. '+' is the only supported tag sigil.
+
+filters:
+    '+tag' is an exact tag filter. '-+tag' excludes that exact tag. Other filters
+    remain grep patterns and '-pattern' negates them. In 'l' and commands based on
+    its selection they match the rendered task line; in 'll' they match only the
+    task body. Therefore 'work' is a text/pattern search, while '+work' always means
+    exactly tag work.
 
 env vars:
     - TSK_DEBUG: show debug information [default: unset, cur: unset]
