@@ -1,36 +1,363 @@
 #!/bin/sh
 
-helpmsg() {
-    echo "usage: $(basename "$0") [initial_query]"
+# Interactive fzf frontend for tsk.
+# It is intentionally a thin wrapper: tsk remains the source of truth for
+# selection, validation and task mutation.
+
+version="0.2.0"
+prog=$(basename "$0")
+fzf_cmd=${TSK_FZF_FZF:-fzf}
+history_file=${TSK_FZF_HISTORY:-$HOME/.fzfhistory-tsk}
+tmpdir=${TMPDIR:-/tmp}
+
+usage() {
+    cat <<EOF_USAGE
+usage: $prog [options] [initial query]  [v$version]
+
+options:
+    -q, --query QUERY       initial fzf query
+    -f, --filter FILTER     pre-filter with a tsk filter (repeatable)
+    -h, --help              show this help
+
++tag, -+tag, @project and -@project arguments are automatically treated as
+filters; other positional arguments keep the old behaviour and form the
+initial fuzzy query. Use -f for arbitrary textual tsk filters.
+
+keys:
+    enter       show selected task(s)
+    tab         multi-select
+    ctrl-s      show selected task(s) outside preview
+    ctrl-e      edit current task
+    ctrl-a      add a task (prefilled with current query)
+    ctrl-x      mark selected task(s) done
+    ctrl-u      mark selected task(s) open
+    ctrl-t      change tags on selected task(s)
+    ctrl-v      set/remove due date on selected task(s)
+    ctrl-d      delete selected task(s), with confirmation
+    ctrl-p      toggle preview
+    alt-r       reload task list
+    ctrl-r      git sync and reload
+EOF_USAGE
 }
 
-if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-    helpmsg
+err() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+    exit 1
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || err "command not found: $1"
+}
+
+# Load newline-delimited filters into positional parameters and run `tsk l`.
+# Keeping filters in a file avoids unsafe eval/quoting when fzf reloads the list.
+list_tasks() {
+    set --
+    if [ -n "${TSK_FZF_FILTER_FILE:-}" ] && [ -f "$TSK_FZF_FILTER_FILE" ]; then
+        while IFS= read -r filter || [ -n "$filter" ]; do
+            set -- "$@" "$filter"
+        done < "$TSK_FZF_FILTER_FILE"
+    fi
+
+    tsk l "$@" | awk '
+        {
+            p = index($0, ": ")
+            if (!p) next
+            id = substr($0, 1, p - 1)
+            text = substr($0, p + 2)
+            printf "%s\t%s\n", id, text
+        }
+    '
+}
+
+pipe_ids() {
+    [ "$#" -gt 0 ] || return 1
+    printf '%s\n' "$@"
+}
+
+pause_tty() {
+    [ -r /dev/tty ] || return 0
+    printf '\npress enter to continue' >/dev/tty
+    IFS= read -r _tsk_fzf_pause </dev/tty || :
+}
+
+preview_task() {
+    id=$1
+    [ -n "$id" ] || return 0
+
+    pipe_ids "$id" | tsk i 2>/dev/null || return 0
+
+    file=${TSK_DIR:-$HOME/.tsk}/$id.tsk.md
+    if [ -f "$file" ] && [ "$(wc -l < "$file")" -gt 1 ]; then
+        printf '\nBODY\n----\n'
+        sed -n '2,$p' "$file"
+    fi
+}
+
+show_ids() {
+    [ "$#" -gt 0 ] || return 0
+    pipe_ids "$@" | tsk s
+}
+
+edit_id() {
+    [ "$#" -eq 1 ] || return 0
+    pipe_ids "$1" | tsk e
+}
+
+add_task() {
+    initial=${1:-}
+    [ -r /dev/tty ] || return 1
+
+    if [ -n "$initial" ]; then
+        printf 'new task [%s]: ' "$initial" >/dev/tty
+    else
+        printf 'new task: ' >/dev/tty
+    fi
+    IFS= read -r task </dev/tty || return 1
+    [ -n "$task" ] || task=$initial
+    [ -n "$task" ] || return 0
+
+    tsk a "$task" || return 1
+    # No filter means "last created task" in tsk, avoiding ambiguous title lookup.
+    tsk e
+}
+
+mark_done() {
+    [ "$#" -gt 0 ] || return 0
+    pipe_ids "$@" | tsk done
+}
+
+mark_open() {
+    [ "$#" -gt 0 ] || return 0
+    pipe_ids "$@" | tsk open
+}
+
+change_tags() {
+    [ "$#" -gt 0 ] || return 0
+    [ -r /dev/tty ] || return 1
+    ids=$(printf '%s\n' "$@")
+
+    printf 'tag changes (+foo -bar): ' >/dev/tty
+    IFS= read -r changes </dev/tty || return 1
+    [ -n "$changes" ] || return 0
+
+    # Tag changes cannot contain whitespace, so word splitting is intentional.
+    set -f
+    oldifs=$IFS
+    IFS=' '
+    set -- $changes
+    IFS=$oldifs
+    printf '%s\n' "$ids" | tsk t "$@"
+}
+
+change_due() {
+    [ "$#" -gt 0 ] || return 0
+    [ -r /dev/tty ] || return 1
+    ids=$(printf '%s\n' "$@")
+
+    printf 'due date (e.g. tomorrow, 2026-09-01; - removes): ' >/dev/tty
+    IFS= read -r due </dev/tty || return 1
+    [ -n "$due" ] || return 0
+
+    printf '%s\n' "$ids" | tsk due "$due"
+}
+
+delete_ids() {
+    [ "$#" -gt 0 ] || return 0
+    [ -r /dev/tty ] || return 1
+    ids=$(printf '%s\n' "$@")
+
+    printf '%s\n' "$ids" | tsk l >&2
+    printf '\ndelete selected task(s) (y/N)? ' >/dev/tty
+    IFS= read -r answer </dev/tty || return 1
+    [ "$answer" = y ] || [ "$answer" = Y ] || return 0
+
+    printf '%s\n' "$ids" | tsk d
+}
+
+git_sync() {
+    tsk y
+    rc=$?
+    pause_tty
+    return "$rc"
+}
+
+# Private commands used by fzf bindings. They intentionally target tasks via
+# stdin so an ID can never become an ambiguous textual filter in tsk.
+case "${1:-}" in
+    __list)
+        list_tasks
+        exit $?
+        ;;
+    __preview)
+        shift
+        preview_task "$@"
+        exit $?
+        ;;
+    __show)
+        shift
+        show_ids "$@"
+        pause_tty
+        exit $?
+        ;;
+    __edit)
+        shift
+        edit_id "$@"
+        exit $?
+        ;;
+    __add)
+        shift
+        add_task "$@"
+        exit $?
+        ;;
+    __done)
+        shift
+        mark_done "$@"
+        exit $?
+        ;;
+    __open)
+        shift
+        mark_open "$@"
+        exit $?
+        ;;
+    __tags)
+        shift
+        change_tags "$@"
+        exit $?
+        ;;
+    __due)
+        shift
+        change_due "$@"
+        exit $?
+        ;;
+    __delete)
+        shift
+        delete_ids "$@"
+        pause_tty
+        exit $?
+        ;;
+    __sync)
+        git_sync
+        exit $?
+        ;;
+esac
+
+if [ "${1:-}" = -h ] || [ "${1:-}" = --help ]; then
+    usage
     exit 0
 fi
 
-q="$*"
+need tsk
+need "$fzf_cmd"
 
-fzf_cmd=fzf
+filter_file=$(mktemp "$tmpdir/tsk-fzf.filters.XXXXXX") || err 'cannot create temporary file'
+trap 'rm -f "$filter_file"' 0 1 2 3 15
+: > "$filter_file"
 
-reload_cmd="IFS=:; tsk l"
-tsk_entries=$(IFS=:; tsk l)
+query=''
+append_query() {
+    if [ -n "$query" ]; then
+        query="$query $1"
+    else
+        query=$1
+    fi
+}
 
-tsk_entry=$(printf "%s\n" "${tsk_entries}" | \
-    sed -E 's/^[0-9]+ (.+)$/\1/' | \
-    $fzf_cmd -q "$q" --print-query --no-sort --keep-right \
-    --cycle --history="$HOME"/.fzfhistory-tsk \
-    --header 'C-s show; C-e edit; C-a add; C-d delete; C-r git sync' \
-    --bind 'ctrl-s:execute(echo "entry: {}\n"; tsk s {}; echo "\nhit enter to continue"; read c)' \
-    --bind 'ctrl-e:execute(tsk e {})' \
-    --bind 'ctrl-a:execute(printf "entry: "; read c; printf "%s" "$c"; echo "y" | tsk a "$c" && tsk e "$c")+reload('"$reload_cmd"')' \
-    --bind 'ctrl-d:execute(tsk d {})+reload('"$reload_cmd"')' \
-    --bind 'ctrl-r:execute(tsk y; echo "hit enter to continue"; read c)' |
-    tail -n1) || exit 70
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -q|--query)
+            [ "$#" -ge 2 ] || err "$1 requires an argument"
+            query=$2
+            shift 2
+            ;;
+        --query=*)
+            query=${1#*=}
+            shift
+            ;;
+        -f|--filter)
+            [ "$#" -ge 2 ] || err "$1 requires an argument"
+            printf '%s\n' "$2" >> "$filter_file"
+            shift 2
+            ;;
+        --filter=*)
+            printf '%s\n' "${1#*=}" >> "$filter_file"
+            shift
+            ;;
+        +*|-+*|@*|-@*)
+            printf '%s\n' "$1" >> "$filter_file"
+            shift
+            ;;
+        --)
+            shift
+            while [ "$#" -gt 0 ]; do
+                printf '%s\n' "$1" >> "$filter_file"
+                shift
+            done
+            ;;
+        -*)
+            err "unknown option [$1] (use -f '$1' for a negative textual tsk filter)"
+            ;;
+        *)
+            append_query "$1"
+            shift
+            ;;
+    esac
+done
 
-[ -z "$tsk_entry" ] && exit 71
+export TSK_FZF_FILTER_FILE=$filter_file
+TSK_FZF_SELF=$0
+export TSK_FZF_SELF
 
-tsk s "$tsk_entry"
-echo "entry: $tsk_entry"
+tab=$(printf '\t')
+filters=$(paste -sd' ' "$filter_file" 2>/dev/null)
+header='enter show | tab select | C-e edit | C-a add | C-x done | C-u open | C-t tags | C-v due | C-d delete | C-p preview | A-r reload | C-r sync'
+[ -n "$filters" ] && header="$header\nfilters: $filters"
 
-# [1]: https://stackoverflow.com/questions/369758/how-to-trim-whitespace-from-a-bash-variable
+entries=$(list_tasks) || exit $?
+[ -n "$entries" ] || exit 71
+
+reload_action='alt-r:reload("$TSK_FZF_SELF" __list)'
+sync_action='ctrl-r:execute("$TSK_FZF_SELF" __sync)+reload("$TSK_FZF_SELF" __list)'
+add_action='ctrl-a:execute("$TSK_FZF_SELF" __add {q})+reload("$TSK_FZF_SELF" __list)'
+edit_action='ctrl-e:execute("$TSK_FZF_SELF" __edit {1})+reload("$TSK_FZF_SELF" __list)'
+show_action='ctrl-s:execute("$TSK_FZF_SELF" __show {+1})'
+done_action='ctrl-x:execute("$TSK_FZF_SELF" __done {+1})+reload("$TSK_FZF_SELF" __list)'
+open_action='ctrl-u:execute("$TSK_FZF_SELF" __open {+1})+reload("$TSK_FZF_SELF" __list)'
+tags_action='ctrl-t:execute("$TSK_FZF_SELF" __tags {+1})+reload("$TSK_FZF_SELF" __list)'
+due_action='ctrl-v:execute("$TSK_FZF_SELF" __due {+1})+reload("$TSK_FZF_SELF" __list)'
+delete_action='ctrl-d:execute("$TSK_FZF_SELF" __delete {+1})+reload("$TSK_FZF_SELF" __list)'
+
+selection=$(
+    printf '%s\n' "$entries" |
+        "$fzf_cmd" \
+            --query "$query" \
+            --multi \
+            --delimiter "$tab" \
+            --with-nth '2..' \
+            --cycle \
+            --history "$history_file" \
+            --prompt 'tsk> ' \
+            --header "$header" \
+            --preview '"$TSK_FZF_SELF" __preview {1}' \
+            --preview-window 'right:60%:wrap' \
+            --bind 'ctrl-p:toggle-preview' \
+            --bind "$show_action" \
+            --bind "$edit_action" \
+            --bind "$add_action" \
+            --bind "$done_action" \
+            --bind "$open_action" \
+            --bind "$tags_action" \
+            --bind "$due_action" \
+            --bind "$delete_action" \
+            --bind "$reload_action" \
+            --bind "$sync_action"
+) || exit $?
+
+[ -n "$selection" ] || exit 71
+
+ids=$(printf '%s\n' "$selection" | cut -f1)
+printf '%s\n' "$ids" | tsk s
