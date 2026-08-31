@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version="0.9.0"
+version="1.0.0"
 tskdir="${TSK_DIR:-$HOME/.tsk}"
 editor="${EDITOR:-vi}"
 tmpdir="${TMPDIR:-/tmp}"
@@ -8,6 +8,9 @@ tskfile_ext="tsk.md"
 TSK_DONE_TAG="${TSK_DONE_TAG:-done}"
 # TSK_DONE_TAG is stored internally without the tag sigil.
 TSK_DONE_TAG=${TSK_DONE_TAG#+}
+TSK_USER="${TSK_USER:-}"
+TSK_REQUIRE_OWNER="${TSK_REQUIRE_OWNER:-0}"
+TSK_AUTO_ASSIGN="${TSK_AUTO_ASSIGN:-0}"
 
 usage() {
     s="$(basename "$0")"
@@ -57,6 +60,17 @@ Usage [v$version]:
         sets a normalized due date on selected tasks; '-' removes it
         date accepts GNU date expressions such as 'tomorrow' or 'next monday'
 
+    $s assign <owner|me> [filters..]
+        assigns selected tasks to one owner, replacing any previous owner
+    $s claim [filters..]
+        assigns selected unowned tasks to \$TSK_USER; refuses tasks owned by others
+    $s unassign [filters..]     (alias: release)
+        removes the owner from selected tasks
+    $s mine [filters..]
+        shows the agenda for tasks owned by \$TSK_USER
+    $s unassigned [filters..]
+        lists selected non-project tasks that have no owner
+
     $s link <parent|depends|link> <target filters..>
         adds a relation from tasks piped on stdin to exactly one target task
         'related' can be used as an alias for relation type 'link'
@@ -76,13 +90,17 @@ Usage [v$version]:
         shows overdue, due-today, blocked/waiting and +next tasks
     $s portfolio [filters..]  (alias: p)
         shows +project roots with open, blocked and overdue task counts
+    $s portfolio --owners [filters..]
+        shows non-project workload by owner: open, next, blocked and overdue counts
     $s check
         checks task metadata and relation integrity
 
     $s g [git cmds/args]
         executes git commands in the tsk directory, e.g.: $s g pull
     $s y [commit msg]
+    $s sync [commit msg]
         git add/commit, then pull --rebase and push in the tsk directory
+        conflicts are left for explicit manual resolution
 
     $s h
         shows extended help
@@ -108,6 +126,7 @@ tags:
         +depends:<task-id>        dependency
         +link:<task-id>           generic relation
         +project                  project root
+        +owner:<name>             task owner (zero or one)
         +next                     actionable next task
         +waiting                  waiting on something external
 
@@ -130,6 +149,12 @@ env vars:
     - TSK_CATCMD: command used to render a task. Task content is piped to it
       (default: mdcat when available, otherwise cat) [cur: ${TSK_CATCMD:-unset}]
     - TSK_DONE_TAG: tag used for completed tasks [default: done, cur: $TSK_DONE_TAG]
+    - TSK_USER: local team identity used by 'mine', 'claim' and 'assign me'
+      [default: unset, cur: ${TSK_USER:-unset}]
+    - TSK_REQUIRE_OWNER: when 1, 'check' reports non-project tasks without owner
+      [default: 0, cur: $TSK_REQUIRE_OWNER]
+    - TSK_AUTO_ASSIGN: when 1, new non-project tasks without +owner are assigned
+      automatically to TSK_USER [default: 0, cur: $TSK_AUTO_ASSIGN]
 EOF_HELP
 }
 
@@ -322,12 +347,20 @@ _select_ids() {
     if _stdin_available; then
         base=$(_selection_ids_from_stdin)
     else
+        if [ "$#" -eq 1 ] && _task_exists "$1"; then
+            printf '%s\n' "$1"
+            return 0
+        fi
         base=$(_task_ids)
     fi
     _filter_ids "$base" "$@"
 }
 
 _select_ids_no_stdin() {
+    if [ "$#" -eq 1 ] && _task_exists "$1"; then
+        printf '%s\n' "$1"
+        return 0
+    fi
     _filter_ids "$(_task_ids)" "$@"
 }
 
@@ -374,6 +407,24 @@ _write_first_line() {
 
 _valid_tag() {
     printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$'
+}
+
+_valid_owner() {
+    printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_-]+$'
+}
+
+_team_user() {
+    [ -n "$TSK_USER" ] || _err "TSK_USER is not set"
+    _valid_owner "$TSK_USER" || _err "invalid TSK_USER [$TSK_USER]; use letters, numbers, '_' or '-'"
+    printf '%s\n' "$TSK_USER"
+}
+
+_owner_of_file() {
+    _get_tag_values owner "$1" | head -n 1
+}
+
+_owner_of_id() {
+    _owner_of_file "$(_task_path "$1")"
 }
 
 _add_tag_file() {
@@ -514,7 +565,20 @@ tag_tasks() {
         _valid_tag "$tag" || _err "invalid tag [$tag]"
         for id in $ids; do
             file=$(_task_path "$id")
-            if [ "$op" = '+' ]; then _add_tag_file "$file" "$tag"; else _remove_tag_file "$file" "$tag"; fi
+            if [ "$op" = '+' ]; then
+                case "$tag" in
+                    owner:*)
+                        wanted_tag=$tag
+                        _remove_tag_prefix_file "$file" owner
+                        _add_tag_file "$file" "$wanted_tag"
+                        ;;
+                    *)
+                        _add_tag_file "$file" "$tag"
+                        ;;
+                esac
+            else
+                _remove_tag_file "$file" "$tag"
+            fi
         done
     done
     _info "tags updated"
@@ -551,6 +615,21 @@ add_task() {
         _add_tag_file "$file" "due:$normalized"
     fi
 
+    owners=$(_get_tag_values owner "$file")
+    owner_count=$(printf '%s\n' "$owners" | sed '/^$/d' | wc -l | tr -d ' ')
+    [ "$owner_count" -le 1 ] || {
+        rm -f "$file"
+        _err "a task can have only one owner"
+    }
+
+    if [ "$owner_count" -eq 0 ] && [ "$TSK_AUTO_ASSIGN" = 1 ] && ! _has_tag project "$file"; then
+        if [ -z "$TSK_USER" ] || ! _valid_owner "$TSK_USER"; then
+            rm -f "$file"
+            _err "TSK_AUTO_ASSIGN requires a valid TSK_USER"
+        fi
+        _add_tag_file "$file" "owner:$TSK_USER"
+    fi
+
     _info "created task $id: $(_get_title "$file")"
 }
 
@@ -559,7 +638,7 @@ edit_task() {
     if ! _stdin_available && [ "$#" -eq 0 ]; then
         id=$(_task_ids | tail -n 1)
     else
-        id=$(_require_one "$(_select_ids "$@")")
+        id=$(_require_one "$(_select_ids "$@")") || return 1
     fi
     cd "$tskdir" || _err "cannot enter [$tskdir]"
     "$editor" "$(_task_path "$id")"
@@ -660,6 +739,84 @@ due_tasks() {
     _info "due date set to $normalized"
 }
 
+assign_tasks() {
+    [ "$#" -gt 0 ] || _err "usage: $(basename "$0") assign <owner|me> [filters..]"
+    owner=$1
+    shift
+    if [ "$owner" = me ]; then owner=$(_team_user) || return 1; fi
+    owner=${owner#+owner:}
+    _valid_owner "$owner" || _err "invalid owner [$owner]; use letters, numbers, '_' or '-'"
+
+    ids=$(_select_for_state_change "$@")
+    _require_selection "$ids"
+    for id in $ids; do
+        file=$(_task_path "$id")
+        _remove_tag_prefix_file "$file" owner
+        _add_tag_file "$file" "owner:$owner"
+    done
+    _info "assigned to $owner"
+}
+
+claim_tasks() {
+    owner=$(_team_user) || return 1
+    ids=$(_select_for_state_change "$@")
+    _require_selection "$ids"
+
+    # Preflight all tasks so claim is atomic from the user's point of view.
+    for id in $ids; do
+        current=$(_owner_of_id "$id")
+        if [ -n "$current" ] && [ "$current" != "$owner" ]; then
+            _err "task [$id] is owned by [$current]; use 'assign $owner' to transfer it explicitly"
+        fi
+    done
+
+    for id in $ids; do
+        file=$(_task_path "$id")
+        _remove_tag_prefix_file "$file" owner
+        _add_tag_file "$file" "owner:$owner"
+    done
+    _info "claimed by $owner"
+}
+
+unassign_tasks() {
+    ids=$(_select_for_state_change "$@")
+    _require_selection "$ids"
+    for id in $ids; do _remove_tag_prefix_file "$(_task_path "$id")" owner; done
+    _info "owner removed"
+}
+
+mine_tasks() {
+    owner=$(_team_user) || return 1
+    agenda "+owner:$owner" "$@"
+}
+
+unassigned_tasks() (
+    _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
+    ua_snapshot=$(mktemp "$tmpdir/tsk.snapshot.XXXXXX") || _err "cannot create temporary file"
+    ua_selected=$(mktemp "$tmpdir/tsk.selected.XXXXXX") || { rm -f "$ua_snapshot"; _err "cannot create temporary file"; }
+    trap 'rm -f "$ua_snapshot" "$ua_selected"' 0 1 2 3 15
+
+    _build_snapshot >"$ua_snapshot" || _err "cannot build task snapshot"
+    _snapshot_select_ids "$ua_snapshot" "$@" >"$ua_selected"
+
+    awk -F '\t' '
+        FILENAME == ARGV[1] {
+            title[$1] = $2
+            tags[$1] = $6
+            owner[$1] = $9
+            project[$1] = index("," $6 ",", ",project,") > 0
+            next
+        }
+        owner[$1] == "" && !project[$1] {
+            printf "%s: %s", $1, title[$1]
+            n = split(tags[$1], a, ",")
+            for (i = 1; i <= n; i++)
+                if (a[i] != "") printf " +%s", a[i]
+            print ""
+        }
+    ' "$ua_snapshot" "$ua_selected"
+)
+
 _relation_type() {
     case "$1" in
         parent|depends|link) printf '%s\n' "$1" ;;
@@ -675,7 +832,7 @@ link_tasks() {
     shift
     sources=$(_selection_ids_from_stdin)
     _require_selection "$sources"
-    target=$(_resolve_one "$@")
+    target=$(_resolve_one "$@") || return 1
 
     for src in $sources; do
         [ "$src" != "$target" ] || _err "cannot create a self relation on [$src]"
@@ -707,7 +864,7 @@ unlink_tasks() {
         return 0
     fi
 
-    target=$(_resolve_one "$@")
+    target=$(_resolve_one "$@") || return 1
     for src in $sources; do _remove_tag_file "$(_task_path "$src")" "$type:$target"; done
     _info "relation [$type] -> [$target] removed"
 }
@@ -771,17 +928,19 @@ _print_ref_section() {
 
 info_task() {
     _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
-    id=$(_require_one "$(_select_ids "$@")")
+    id=$(_require_one "$(_select_ids "$@")") || return 1
     file=$(_task_path "$id")
     title=$(_get_title "$file")
     if _is_done_id "$id"; then state=done; else state=open; fi
     due=$(_get_tag_values due "$file" | head -n 1)
+    owner=$(_owner_of_file "$file")
 
     printf '[%s] %s\n' "$id" "$title"
     printf 'state: %s\n' "$state"
+    [ -n "$owner" ] && printf 'owner: %s\n' "$owner"
     [ -n "$due" ] && printf 'due: %s\n' "$due"
 
-    plain_tags=$(_get_tags "$file" | awk -F: -v d="$TSK_DONE_TAG" '$0 != d && $1 != "due" && $1 != "parent" && $1 != "depends" && $1 != "link" { print "+" $0 }')
+    plain_tags=$(_get_tags "$file" | awk -F: -v d="$TSK_DONE_TAG" '$0 != d && $1 != "due" && $1 != "owner" && $1 != "parent" && $1 != "depends" && $1 != "link" { print "+" $0 }')
     [ -n "$plain_tags" ] && printf 'tags: %s\n' "$(printf '%s\n' "$plain_tags" | paste -sd' ' -)"
 
     parent=$(_parent_of "$id")
@@ -816,6 +975,7 @@ _build_snapshot() {
             parent = ""
             deps = ""
             links = ""
+            owner = ""
 
             for (i = 1; i <= NF; i++) {
                 tok = $i
@@ -831,6 +991,8 @@ _build_snapshot() {
                         val = substr(tag, p + 1)
                         if (key == "due" && due == "")
                             due = val
+                        else if (key == "owner" && owner == "")
+                            owner = val
                         else if (key == "parent" && parent == "")
                             parent = val
                         else if (key == "depends")
@@ -843,8 +1005,8 @@ _build_snapshot() {
                 }
             }
 
-            printf "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", \
-                id, title, done, due, parent, tags, deps, links
+            printf "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n", \
+                id, title, done, due, parent, tags, deps, links, owner
         }
     ' "$tskdir"/*."$tskfile_ext"
 }
@@ -928,6 +1090,11 @@ _snapshot_select_ids() (
     fs_next=$(mktemp "$tmpdir/tsk.sel.XXXXXX") || { rm -f "$fs_sel"; _err "cannot create temporary file"; }
     fs_members=$(mktemp "$tmpdir/tsk.members.XXXXXX") || { rm -f "$fs_sel" "$fs_next"; _err "cannot create temporary file"; }
     trap 'rm -f "$fs_sel" "$fs_next" "$fs_members"' 0 1 2 3 15
+
+    if ! _stdin_available && [ "$#" -eq 1 ] && _task_exists "$1"; then
+        printf '%s\n' "$1"
+        exit 0
+    fi
 
     if _stdin_available; then
         _selection_ids_from_stdin >"$fs_sel"
@@ -1154,7 +1321,7 @@ report() (
                 if (tag == "" || tag == done_tag) continue
                 p = index(tag, ":")
                 key = p ? substr(tag, 1, p - 1) : tag
-                if (key == "due" || key == "parent" || key == "depends" || key == "link")
+                if (key == "due" || key == "owner" || key == "parent" || key == "depends" || key == "link")
                     continue
                 tag_count[tag]++
                 if (!(tag in tag_seen)) {
@@ -1311,6 +1478,7 @@ agenda() (
             due[id] = $4
             tags[id] = $6
             deps[id] = $7
+            owner[id] = $9
             next
         }
         {
@@ -1336,6 +1504,7 @@ agenda() (
 
         function state_suffix(id, b,    out) {
             out = ""
+            if (owner[id] != "") out = out " [owner:" owner[id] "]"
             if (b != "") out = out " [blocked]"
             if (has_tag(id, "waiting")) out = out " [waiting]"
             return out
@@ -1414,16 +1583,127 @@ agenda() (
                 for (i = 1; i <= nn; i++) {
                     id = next_task[i]
                     if (due[id] != "")
-                        printf "  %s [%s] %s\n", due[id], id, title[id]
+                        printf "  %s [%s] %s%s\n", due[id], id, title[id], state_suffix(id, "")
                     else
-                        printf "  [%s] %s\n", id, title[id]
+                        printf "  [%s] %s%s\n", id, title[id], state_suffix(id, "")
                 }
             }
         }
     ' "$ag_snapshot" "$ag_selected"
 )
 
+owner_portfolio() (
+    _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
+
+    op_snapshot=$(mktemp "$tmpdir/tsk.snapshot.XXXXXX") || _err "cannot create temporary file"
+    op_selected=$(mktemp "$tmpdir/tsk.selected.XXXXXX") || { rm -f "$op_snapshot"; _err "cannot create temporary file"; }
+    trap 'rm -f "$op_snapshot" "$op_selected"' 0 1 2 3 15
+
+    _build_snapshot >"$op_snapshot" || _err "cannot build task snapshot"
+    _snapshot_select_ids "$op_snapshot" "$@" >"$op_selected"
+    [ -s "$op_selected" ] || _err "no task found"
+
+    op_today=$(_today)
+    awk -F '\t' -v today="$op_today" '
+        FILENAME == ARGV[1] {
+            id = $1
+            exists[id] = 1
+            done[id] = $3 + 0
+            due[id] = $4
+            tags[id] = $6
+            deps[id] = $7
+            owner[id] = $9
+            is_project[id] = index("," $6 ",", ",project,") > 0
+            next
+        }
+        {
+            id = $1
+            if (id in exists)
+                selected_order[++sn] = id
+        }
+
+        function has_tag(id, want) {
+            return index("," tags[id] ",", "," want ",") > 0
+        }
+
+        function is_blocked(id,    a, k, i, dep) {
+            k = split(deps[id], a, ",")
+            for (i = 1; i <= k; i++) {
+                dep = a[i]
+                if (dep != "" && (!(dep in exists) || !done[dep]))
+                    return 1
+            }
+            return 0
+        }
+
+        function owner_key(id) {
+            return owner[id] == "" ? "@unassigned" : owner[id]
+        }
+
+        function display_owner(key) {
+            return key == "@unassigned" ? "(unassigned)" : key
+        }
+
+        function sort_owners(    i, j, key, prev, dk, dp) {
+            for (i = 2; i <= on; i++) {
+                key = owners[i]
+                j = i - 1
+                while (j >= 1) {
+                    prev = owners[j]
+                    # Keep unassigned last; otherwise sort case-insensitively.
+                    if (prev == "@unassigned" && key != "@unassigned") {
+                        owners[j + 1] = prev
+                        j--
+                        continue
+                    }
+                    if (key == "@unassigned") break
+                    dk = tolower(key)
+                    dp = tolower(prev)
+                    if (dp < dk || (dp == dk && prev <= key)) break
+                    owners[j + 1] = prev
+                    j--
+                }
+                owners[j + 1] = key
+            }
+        }
+
+        END {
+            for (i = 1; i <= sn; i++) {
+                id = selected_order[i]
+                if (is_project[id]) continue
+                key = owner_key(id)
+                if (!(key in seen_owner)) {
+                    seen_owner[key] = 1
+                    owners[++on] = key
+                }
+
+                if (done[id]) continue
+                open_count[key]++
+                if (has_tag(id, "next")) next_count[key]++
+                if (is_blocked(id)) blocked_count[key]++
+                if (due[id] != "" && due[id] < today) overdue_count[key]++
+            }
+
+            sort_owners()
+            printf "OWNERS  %d\n\n", on
+            print "  OPEN  NEXT  BLOCKED  OVERDUE  OWNER"
+            for (i = 1; i <= on; i++) {
+                key = owners[i]
+                printf "  %4d  %4d  %7d  %7d  %s\n", \
+                    open_count[key] + 0, next_count[key] + 0, blocked_count[key] + 0, \
+                    overdue_count[key] + 0, display_owner(key)
+            }
+        }
+    ' "$op_snapshot" "$op_selected"
+)
+
 portfolio() (
+    if [ "${1:-}" = '--owners' ]; then
+        shift
+        owner_portfolio "$@"
+        return $?
+    fi
+
     _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
 
     pf_snapshot=$(mktemp "$tmpdir/tsk.snapshot.XXXXXX") || _err "cannot create temporary file"
@@ -1649,6 +1929,17 @@ check_tasks() {
             issues=$((issues + 1))
         }
 
+        owners=$(_get_tag_values owner "$file")
+        owner_count=$(printf '%s\n' "$owners" | sed '/^$/d' | wc -l | tr -d ' ')
+        [ "$owner_count" -le 1 ] || {
+            printf 'multiple owners: [%s]\n' "$id"
+            issues=$((issues + 1))
+        }
+        if [ "$TSK_REQUIRE_OWNER" = 1 ] && [ "$owner_count" -eq 0 ] && ! _has_tag project "$file"; then
+            printf 'missing owner: [%s]\n' "$id"
+            issues=$((issues + 1))
+        fi
+
         dues=$(_get_tag_values due "$file")
         due_count=$(printf '%s\n' "$dues" | sed '/^$/d' | wc -l | tr -d ' ')
         [ "$due_count" -le 1 ] || {
@@ -1698,11 +1989,56 @@ git_sync() {
     _ensure_dir
     (
         cd "$tskdir" || exit 1
+        git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+            _warn "[$tskdir] is not a git repository"
+            exit 1
+        }
+
+        gitdir=$(git rev-parse --git-dir 2>/dev/null) || exit 1
+        if [ -d "$gitdir/rebase-merge" ] || [ -d "$gitdir/rebase-apply" ]; then
+            _warn "a git rebase is already in progress"
+            _warn "resolve it with 'git -C $tskdir rebase --continue' or abort it before syncing"
+            exit 1
+        fi
+
         git add -A || exit 1
         if ! git diff --cached --quiet; then
-            git commit -m "${*:-sync}" || exit 1
+            if [ "$#" -gt 0 ]; then
+                msg=$*
+            elif [ -n "$TSK_USER" ]; then
+                msg="tsk: sync by $TSK_USER"
+            else
+                msg="tsk: sync"
+            fi
+            git commit -m "$msg" || exit 1
         fi
-        git pull --rebase && git push
+
+        if ! git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+            branch=$(git symbolic-ref --quiet --short HEAD) || {
+                _warn "cannot sync a detached HEAD without an upstream"
+                exit 1
+            }
+            if ! git remote get-url origin >/dev/null 2>&1; then
+                _warn "current branch has no upstream and remote 'origin' is not configured"
+                exit 1
+            fi
+
+            if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+                git fetch origin "$branch" || exit 1
+                git branch --set-upstream-to="origin/$branch" "$branch" >/dev/null || exit 1
+            else
+                # First team sync for a new repository/branch.
+                git push -u origin "$branch"
+                exit $?
+            fi
+        fi
+
+        if ! git pull --rebase; then
+            _warn "sync stopped during rebase; no automatic conflict resolution was attempted"
+            _warn "resolve conflicts, then run 'git -C $tskdir rebase --continue' (or rebase --abort)"
+            exit 1
+        fi
+        git push
     )
 }
 
@@ -1718,6 +2054,11 @@ main() {
         done|c) done_tasks "$@" ;;
         open|u) open_tasks "$@" ;;
         due) due_tasks "$@" ;;
+        assign) assign_tasks "$@" ;;
+        claim) claim_tasks "$@" ;;
+        unassign|release) unassign_tasks "$@" ;;
+        mine) mine_tasks "$@" ;;
+        unassigned) unassigned_tasks "$@" ;;
         link) link_tasks "$@" ;;
         unlink) unlink_tasks "$@" ;;
         i|info) info_task "$@" ;;
@@ -1731,7 +2072,7 @@ main() {
         ss) TSK_CATCMD=cat show_tasks "$@" ;;
         h|help) helpmsg ;;
         g) _ensure_dir; git -C "$tskdir" "$@" ;;
-        y) git_sync "$@" ;;
+        y|sync) git_sync "$@" ;;
         run) "$@" ;;
         *)
             if command -v "$scriptname-$cmd" >/dev/null 2>&1; then
