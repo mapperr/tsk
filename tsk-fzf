@@ -343,7 +343,7 @@ selection=$(
             --prompt 'tsk> ' \
             --header "$header" \
             --preview '"$TSK_FZF_SELF" __preview {1}' \
-            --preview-window 'right:60%:wrap' \
+            --preview-window 'right:60%:wrap:hidden' \
             --bind 'ctrl-p:toggle-preview' \
             --bind "$show_action" \
             --bind "$edit_action" \
