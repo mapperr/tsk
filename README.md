@@ -1011,7 +1011,7 @@ tsk unlink link <target filters...>
 ```text
 tsk tree [filters...]              hierarchy
 tsk report [filters...]            overview (alias: r)
-tsk agenda [filters...]            overdue/today/blocked/next
+tsk agenda [filters...]            overdue/today/blocked/next  (alias: ag)
 tsk portfolio [filters...]         project portfolio (alias: p)
 tsk portfolio --owners [filters...] owner workload
 tsk check                          integrity check

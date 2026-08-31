@@ -86,7 +86,7 @@ Usage [v$version]:
     $s r [filters..]
         prints an overview of open/done, due, blocked and root tasks and tags
         for the selected tasks; accepts the same filters and piped selections as 'l'
-    $s agenda [filters..]
+    $s agenda [filters..]  (alias: ag)
         shows overdue, due-today, blocked/waiting and +next tasks
     $s portfolio [filters..]  (alias: p)
         shows +project roots with open, blocked and overdue task counts
@@ -2064,7 +2064,7 @@ main() {
         i|info) info_task "$@" ;;
         tree) tree_tasks "$@" ;;
         r|report) report "$@" ;;
-        agenda) agenda "$@" ;;
+        ag|agenda) agenda "$@" ;;
         p|portfolio|projects) portfolio "$@" ;;
         check) check_tasks "$@" ;;
         e) edit_task "$@" ;;
