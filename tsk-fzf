@@ -24,7 +24,6 @@ filters; other positional arguments keep the old behaviour and form the
 initial fuzzy query. Use -f for arbitrary textual tsk filters.
 
 keys:
-    enter       show selected task(s)
     tab         multi-select
     ctrl-s      show selected task(s) outside preview
     ctrl-e      edit current task
@@ -35,8 +34,7 @@ keys:
     ctrl-v      set/remove due date on selected task(s)
     ctrl-d      delete selected task(s), with confirmation
     ctrl-p      toggle preview
-    alt-r       reload task list
-    ctrl-r      git sync and reload
+    ctrl-r      reload task list
 EOF_USAGE
 }
 
@@ -175,13 +173,6 @@ delete_ids() {
     printf '%s\n' "$ids" | tsk d
 }
 
-git_sync() {
-    tsk y
-    rc=$?
-    pause_tty
-    return "$rc"
-}
-
 # Private commands used by fzf bindings. They intentionally target tasks via
 # stdin so an ID can never become an ambiguous textual filter in tsk.
 case "${1:-}" in
@@ -234,10 +225,6 @@ case "${1:-}" in
         shift
         delete_ids "$@"
         pause_tty
-        exit $?
-        ;;
-    __sync)
-        git_sync
         exit $?
         ;;
 esac
@@ -314,14 +301,13 @@ export TSK_FZF_SELF
 
 tab=$(printf '\t')
 filters=$(paste -sd' ' "$filter_file" 2>/dev/null)
-header='enter show | tab select | C-e edit | C-a add | C-x done | C-u open | C-t tags | C-v due | C-d delete | C-p preview | A-r reload | C-r sync'
+header='tab select | C-e edit | C-a add | C-x done | C-u open | C-t tags | C-v due | C-d delete | C-p preview | C-r reload'
 [ -n "$filters" ] && header="$header\nfilters: $filters"
 
 entries=$(list_tasks) || exit $?
 [ -n "$entries" ] || exit 71
 
-reload_action='alt-r:reload("$TSK_FZF_SELF" __list)'
-sync_action='ctrl-r:execute("$TSK_FZF_SELF" __sync)+reload("$TSK_FZF_SELF" __list)'
+reload_action='ctrl-r:reload("$TSK_FZF_SELF" __list)'
 add_action='ctrl-a:execute("$TSK_FZF_SELF" __add {q})+reload("$TSK_FZF_SELF" __list)'
 edit_action='ctrl-e:execute("$TSK_FZF_SELF" __edit {1})+reload("$TSK_FZF_SELF" __list)'
 show_action='ctrl-s:execute("$TSK_FZF_SELF" __show {+1})'
@@ -353,11 +339,10 @@ selection=$(
             --bind "$tags_action" \
             --bind "$due_action" \
             --bind "$delete_action" \
-            --bind "$reload_action" \
-            --bind "$sync_action"
+            --bind "$reload_action"
 ) || exit $?
 
 [ -n "$selection" ] || exit 71
 
 ids=$(printf '%s\n' "$selection" | cut -f1)
-printf '%s\n' "$ids" | tsk s
+printf '%s' "$ids"
