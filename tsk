@@ -6,8 +6,12 @@ editor="${EDITOR:-vi}"
 tmpdir="${TMPDIR:-/tmp}"
 tskfile_ext="tsk.md"
 TSK_DONE_TAG="${TSK_DONE_TAG:-done}"
-# TSK_DONE_TAG is stored internally without the tag sigil.
+TSK_NEXT_TAG="${TSK_NEXT_TAG:-next}"
+TSK_WAIT_TAG="${TSK_WAIT_TAG:-wait}"
+# TSK_XXXX_TAG are stored internally without the tag sigil.
 TSK_DONE_TAG=${TSK_DONE_TAG#+}
+TSK_NEXT_TAG=${TSK_NEXT_TAG#+}
+TSK_WAIT_TAG=${TSK_WAIT_TAG#+}
 TSK_USER="${TSK_USER:-}"
 TSK_REQUIRE_OWNER="${TSK_REQUIRE_OWNER:-0}"
 TSK_AUTO_ASSIGN="${TSK_AUTO_ASSIGN:-0}"
@@ -52,10 +56,18 @@ Usage [v$version]:
         changes tags on the task list piped on stdin
         syntax: '+tag' to add, '-tag' to remove
 
-    $s done [filters..]       (alias: c)
+    $s done [filters..]       (alias: x)
         marks selected tasks as done
-    $s open [filters..]       (alias: u)
+    $s open [filters..]       (alias: X)
         removes the done tag from selected tasks
+    $s next [filters..]       (alias: n)
+        marks selected tasks as next
+    $s nonext [filters..]     (alias: N)
+        removes the next tag from selected tasks
+    $s wait [filters..]       (alias: w)
+        marks selected tasks as wait
+    $s nowait [filters..]     (alias: W)
+        removes the wait tag from selected tasks
     $s due <date|-> [filters..]
         sets a normalized due date on selected tasks; '-' removes it
         date accepts GNU date expressions such as 'tomorrow' or 'next monday'
@@ -149,6 +161,8 @@ env vars:
     - TSK_CATCMD: command used to render a task. Task content is piped to it
       (default: mdcat when available, otherwise cat) [cur: ${TSK_CATCMD:-unset}]
     - TSK_DONE_TAG: tag used for completed tasks [default: done, cur: $TSK_DONE_TAG]
+    - TSK_NEXT_TAG: tag used for tasks to be worked on [default: next, cur: $TSK_NEXT_TAG]
+    - TSK_WAIT_TAG: tag used for tasks in waiting [default: wait, cur: $TSK_WAIT_TAG]
     - TSK_USER: local team identity used by 'mine', 'claim' and 'assign me'
       [default: unset, cur: ${TSK_USER:-unset}]
     - TSK_REQUIRE_OWNER: when 1, 'check' reports non-project tasks without owner
@@ -714,6 +728,34 @@ open_tasks() {
     _require_selection "$ids"
     for id in $ids; do _remove_tag_file "$(_task_path "$id")" "$TSK_DONE_TAG"; done
     _info "marked open"
+}
+
+set_next_on_tasks() {
+    ids=$(_select_for_state_change "$@")
+    _require_selection "$ids"
+    for id in $ids; do _add_tag_file "$(_task_path "$id")" "$TSK_NEXT_TAG"; done
+    _info "marked next"
+}
+
+unset_next_on_tasks() {
+    ids=$(_select_for_state_change "$@")
+    _require_selection "$ids"
+    for id in $ids; do _remove_tag_file "$(_task_path "$id")" "$TSK_NEXT_TAG"; done
+    _info "unmarked next"
+}
+
+set_wait_on_tasks() {
+    ids=$(_select_for_state_change "$@")
+    _require_selection "$ids"
+    for id in $ids; do _add_tag_file "$(_task_path "$id")" "$TSK_WAIT_TAG"; done
+    _info "marked wait"
+}
+
+unset_wait_on_tasks() {
+    ids=$(_select_for_state_change "$@")
+    _require_selection "$ids"
+    for id in $ids; do _remove_tag_file "$(_task_path "$id")" "$TSK_WAIT_TAG"; done
+    _info "unmarked wait"
 }
 
 due_tasks() {
@@ -2046,14 +2088,18 @@ main() {
     cmd=$1
     shift
     case "$cmd" in
-        l) list_tasks "$@" ;;
-        ll) search_tasks "$@" ;;
-        a) add_task "$@" ;;
-        d) del_tasks "$@" ;;
-        t) tag_tasks "$@" ;;
+        list|l) list_tasks "$@" ;;
+        search|ll) search_tasks "$@" ;;
+        add|a) add_task "$@" ;;
+        delete|d) del_tasks "$@" ;;
+        tag|t) tag_tasks "$@" ;;
         done|c) done_tasks "$@" ;;
         open|u) open_tasks "$@" ;;
         due) due_tasks "$@" ;;
+        next|n) set_next_on_tasks "$@" ;;
+        nonext|N) unset_next_on_tasks "$@" ;;
+        wait|w) set_wait_on_tasks "$@" ;;
+        nowait|W) unset_wait_on_tasks "$@" ;;
         assign) assign_tasks "$@" ;;
         claim) claim_tasks "$@" ;;
         unassign|release) unassign_tasks "$@" ;;
