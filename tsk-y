@@ -1,0 +1,7 @@
+#!/bin/sh
+msg="$@"
+[ -z "$msg" ] && msg=sync
+git -C "$(tsk dir)" add -A &&
+git -C "$(tsk dir)" commit -m "$msg" &&
+git -C "$(tsk dir)" pull &&
+git -C "$(tsk dir)" push

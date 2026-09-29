@@ -1,1146 +1,589 @@
 # tsk
 
-> Plain-text task management for people who think a database is an awfully dramatic way to remember “fix DNS”.
+`tsk` is a tiny task manager for the command line.
 
-`tsk` is a small command-line task manager built around a deliberately boring idea:
+Its data model is deliberately boring:
 
 ```text
 one task = one Markdown file
 ```
 
-Everything else grows from that. Tags describe metadata, task IDs create relationships, Git provides history and synchronization, and normal Unix pipes glue commands together.
+The first line is the task title followed by `+tags`; everything below it is normal Markdown. There is no database, daemon, account, server, or hidden state to keep alive.
 
-```sh
-tsk a Fix the login bug +work +next
-tsk agenda
-tsk tree @ace
-tsk portfolio --owners
+```text
+Fix split DNS +work +next +due:2026-10-02
+
+NetworkManager is using the wrong resolver after the VPN comes up.
 ```
 
-No daemon. No account. No cloud service. No hidden state. No sprint ceremony unless you bring your own.
+`tsk` is intentionally small. The everyday workflow is mostly:
 
-## Features
+```sh
+tsk                              # what needs attention?
+tsk a Fix split DNS +work +next  # capture something
+tsk l +work                      # find tasks
+tsk e DNS                        # edit one
+tsk done DNS                     # finish it
+```
 
-* one Markdown file per task;
-* shell-friendly `+tags`;
-* exact tag, regex, negative, and project/subtree filters;
-* Markdown bodies editable with `$EDITOR`;
-* due dates with human-friendly CLI input;
-* parent/child task hierarchies;
-* dependencies, blockers, backlinks, and generic links;
-* project trees and project portfolio views;
-* `agenda` for the small set of tasks that actually need attention;
-* team ownership with `+owner:name`;
-* personal and team workload views;
-* integrity checking for broken links and cycles;
-* Git-based history and team synchronization;
-* stdin/stdout composition;
-* external commands such as `tsk-fzf` through a tiny extension mechanism;
-* no persistent index or database to repair at 2 AM.
+If you want more interface around that core, optional `tsk-*` executables extend it without making the core larger. This repository currently includes `tsk-fzf`, `tsk-git`, and `tsk-y`.
 
-The database is a directory. The API is a pipe. The audit log can be Git.
+## Why
 
----
+Task managers have a tendency to become hobbies.
+
+`tsk` tries not to.
+
+It keeps only three built-in pieces of task metadata:
+
+```text
++done             completed
++next             part of the current working set
++due:YYYY-MM-DD   deadline
+```
+
+Every other `+tag` is just a tag. Projects, areas, clients, contexts, and whatever else you care about do not require new entities or configuration:
+
+```text
+Review API mapping +work +issuesyncer +qilab +next
+Buy printer paper +home
+Upgrade PostgreSQL +work +ace
+```
+
+The goal is not to model your work perfectly. The goal is to make capturing, finding, and finishing work cheap.
 
 ## Installation
 
-`tsk` is a single shell script.
+`tsk` is a shell script. Put it somewhere in `PATH`:
 
 ```sh
-git clone https://git.sr.ht/~mapperr/tsk
-cd tsk
-install -m 0755 tsk "$HOME/.local/bin/tsk"
+install -m 0755 tsk "$HOME/bin/tsk"
 ```
 
-Make sure `~/.local/bin` is in `PATH`:
+Or, if you use [`just`](https://github.com/casey/just), this repository provides:
 
 ```sh
-export PATH="$HOME/.local/bin:$PATH"
+just link
 ```
 
-Then:
+By default it links the executable `tsk*` files into `$HOME/bin`. A different directory can be supplied:
 
 ```sh
-tsk h
+just link "$HOME/.local/bin"
 ```
 
-By default tasks live in:
+Tasks live in:
 
 ```text
 ~/.tsk
 ```
 
-Use another directory with:
+Override that with:
 
 ```sh
 export TSK_DIR="$HOME/tasks"
 ```
 
-### Requirements
+The editor used by `tsk e` comes from `$EDITOR`, falling back to `vi`.
 
-`tsk` uses a POSIX-style `/bin/sh`, but targets a Linux/GNU-ish userspace. In particular, date handling uses GNU `date` features such as `date -d`.
+`tsk` targets a normal Linux command-line environment and uses GNU `date` for relative dates such as `tomorrow` and `next monday`.
 
-It expects the usual command-line toolbox: `awk`, `grep`, `sed`, `date`, `mktemp`, `sort`, `cut`, `tr`, `dd`, and friends.
+## Task files
 
-Optional but useful:
-
-* **Git** for history, synchronization, and team use;
-* **mdcat** for rendered Markdown output;
-* **fzf** for an interactive frontend;
-* **ripgrep**, **bat**, and **Graphviz** because plain text enjoys good company.
-
----
-
-## The data model
-
-A task is stored as a file such as:
+A task is a Markdown file whose filename is its stable full ID:
 
 ```text
-20260831152700123-AbC1.tsk.md
+20260929130000000-AbC1.tsk.md
 ```
 
-The filename, minus `.tsk.md`, is the task's stable ID.
-
-The first line contains the title and metadata:
+The first line contains title and tags:
 
 ```text
-Implement OAuth refresh +work +next +owner:michele +due:2026-09-04
+Write migration notes +work +ace +next +due:2026-10-03
 ```
 
-Everything below the first line is ordinary Markdown:
+The body, if present, begins on the following lines:
 
 ```markdown
-Implement OAuth refresh +work +next +owner:michele +due:2026-09-04
+Write migration notes +work +ace +next +due:2026-10-03
 
-Rotate the refresh token after a successful refresh.
+Document the differences between the old and new rules packages.
 
-## Notes
+## Check
 
-- keep the old token valid during the grace period
-- add integration tests
-- document failure cases
+- environment variables
+- deployment steps
+- rollback procedure
 ```
 
-There is no sidecar metadata file and no database row hiding somewhere else.
+You can inspect the files with any normal Unix tool. `tsk` does not own the data format; it merely makes it convenient.
 
-### Tags
+## Daily view
 
-`tsk` uses `+` as the only tag sigil:
-
-```text
-+work
-+linux
-+client-acme
-+owner:michele
-+due:2026-09-04
-```
-
-`+` is intentionally used instead of `#`: shells already have opinions about `#`, and they are not negotiable.
-
-Tags can be completely free-form, but some have semantic meaning:
-
-| Tag               | Meaning                       |
-| ----------------- | ----------------------------- |
-| `+done`           | completed task                |
-| `+due:YYYY-MM-DD` | due date                      |
-| `+parent:<id>`    | parent task                   |
-| `+depends:<id>`   | dependency                    |
-| `+link:<id>`      | generic relationship          |
-| `+project`        | project root                  |
-| `+owner:<name>`   | team owner                    |
-| `+next`           | actionable next task          |
-| `+waiting`        | waiting on something external |
-
-A task can have zero or one parent and zero or one owner.
-
-### Derived state
-
-Some information is deliberately **not** stored twice.
-
-If task A contains:
-
-```text
-+depends:B
-```
-
-then `tsk` can derive both:
-
-```text
-A depends on B
-B blocks A
-```
-
-Likewise, children, backlinks, blocked state, project membership, and overdue state are calculated dynamically.
-
-Store one fact. Derive the reverse view. Avoid synchronized lies.
-
----
-
-## Quick start
-
-Create a task:
+Running `tsk` with no arguments shows only the things likely to deserve attention:
 
 ```sh
-tsk a Buy coffee +personal +next
+tsk
 ```
 
-List tasks:
+Example:
+
+```text
+OVERDUE
+  ! 2026-09-27 [Qa7X] (2d late) Renew certificate +work
+
+TODAY
+  = 2026-09-29 [Jm2P] Send analysis +work +qilab
+
+TOMORROW
+  > 2026-09-30 [R4fN] Prepare release +work
+
+IN A WEEK
+  - 2026-10-02 [xbHi] (3d) Review API mapping +qilab +issuesyncer
+
+NEXT
+  [7uYr] Investigate resolver +work +infra
+```
+
+The sections are:
+
+- **OVERDUE** — deadlines before today;
+- **TODAY** — due today;
+- **TOMORROW** — due tomorrow;
+- **IN A WEEK** — due from the day after tomorrow through seven days from today;
+- **NEXT** — `+next` tasks that were not already shown in a deadline section.
+
+Deadlines outside `TODAY` and `TOMORROW` include a compact relative indication such as `(3d)` or `(2d late)`.
+
+Completed tasks never appear in this view.
+
+## Adding tasks
+
+```sh
+tsk a Fix VPN DNS +work +next
+```
+
+`+tags` can appear together with the title. Due dates supplied while creating a task are normalized:
+
+```sh
+tsk a Renew certificate +work +due:tomorrow
+```
+
+The file stores an absolute date:
+
+```text
+Renew certificate +work +due:2026-09-30
+```
+
+A body can be supplied on stdin:
+
+```sh
+cat <<'EOF_BODY' | tsk a Investigate outage +work +next
+Observed only while connected through the VPN.
+
+Things to check:
+- DNS
+- routes
+- proxy
+EOF_BODY
+```
+
+## Listing and filtering
+
+`tsk l` lists open tasks:
 
 ```sh
 tsk l
 ```
 
-Filter them:
+Completed tasks are hidden by default.
 
 ```sh
-tsk l +personal
-tsk l +next -+done
+tsk l --all       # open and done
+tsk l --done      # done only
 ```
 
-Show a task:
-
-```sh
-tsk s coffee
-```
-
-Edit it:
-
-```sh
-tsk e coffee
-```
-
-Complete it:
-
-```sh
-tsk done coffee
-```
-
-Or let the pipe do the talking:
-
-```sh
-tsk l coffee | tsk done
-```
-
-You are now managing tasks without creating a workspace, board, sprint, epic, or field named `Priority 2`.
-
----
-
-## Filtering
-
-Filters are a core part of `tsk`. They are applied **sequentially**, so combinations behave like a pipeline of selections.
-
-### Exact tag filters
+### Exact tags
 
 ```sh
 tsk l +work
+tsk l +work +qilab
+tsk l -+home
 ```
 
-matches the exact tag `+work`.
+`+work` means the exact tag `+work`; `-+work` excludes it.
 
-Exclude it with:
+### Literal text
+
+Normal text filters are case-insensitive literal matches:
 
 ```sh
-tsk l -+work
+tsk l vpn
+tsk l 'API mapping'
+tsk l work -legacy
 ```
 
-Exact means exact: `+work` does not match `+work-old`.
+Filters are applied sequentially.
 
-### Text and regex filters
+### Explicit regular expressions
 
-Other filters are case-insensitive grep patterns over the rendered task line:
+Regexes are opt-in with `~`:
 
 ```sh
-tsk l oauth
-tsk l 'oauth|oidc'
-tsk l backend -legacy
+tsk l '~vpn|dns'
+tsk l -'~old|legacy'
 ```
 
-A leading `-` negates a normal filter:
+Literal matching is the default on purpose: punctuation in a task title should not accidentally become a regular expression.
+
+### IDs
+
+Normal output shows a short ID:
+
+```text
+[xbHi] Review API mapping +qilab +issuesyncer
+```
+
+The full ID remains in the filename, but a unique short ID is accepted anywhere a filter can identify a task:
 
 ```sh
-tsk l work -obsolete
+tsk e xbHi
+tsk done xbHi
 ```
 
-### Project and subtree filters
+If a short suffix is not unique, `tsk` shows the full ID instead.
 
-`@pattern` selects a matching root plus all descendants:
+## Reviewing a subset
+
+`tsk r` renders the same view as bare `tsk`, but only for a selection:
 
 ```sh
-tsk l @ace
-tsk tree @ace
-tsk agenda @ace
-tsk report @ace
+tsk r +work
+tsk r +qilab +issuesyncer
 ```
 
-Matching `+project` tasks are preferred as subtree roots. If there is no matching project, a normal task can become the root.
-
-Exclude an entire subtree with:
+It also composes with pipelines:
 
 ```sh
-tsk l -@legacy
+tsk l +work | tsk r
+tsk l +work | tsk r +qilab
 ```
 
-Combine filters freely:
+This is useful when the global daily view is too broad but a full flat list is too noisy.
+
+## Showing and editing
+
+`tsk s` outputs the selected Markdown file exactly as stored, using `cat` semantics and adding nothing:
 
 ```sh
-tsk l @ace +next -+waiting
-tsk agenda @ace +owner:michele
-tsk report @ace -+done
+tsk s xbHi
 ```
 
-### Exact task IDs
-
-Existing IDs can be used directly:
+That makes it easy to pipe somewhere else:
 
 ```sh
-tsk i 20260831152700123-AbC1
+tsk s xbHi | less
+tsk s xbHi | mdcat
 ```
 
-An existing ID is treated as an ID, not as an accidental regex that happens to occur inside somebody else's `+parent:` or `+depends:` tag.
-
-### Search inside task bodies
-
-`tsk ll` searches the body rather than the first-line record:
+Edit exactly one task with:
 
 ```sh
-tsk ll postgres
-tsk ll 'timeout|retry'
+tsk e xbHi
 ```
 
-Metadata and subtree filters still work:
+or by filtering:
 
 ```sh
-tsk ll @ace +work postgres
+tsk e 'API mapping'
 ```
 
-Meaning: search for `postgres` in bodies, but only inside ACE tasks tagged `+work`.
-
----
-
-## Unix pipelines
-
-The output of `tsk l` is designed to be fed back into `tsk`.
-
-```sh
-tsk l +next | tsk done
-```
-
-Bulk tag changes:
-
-```sh
-tsk l @ace +backend | tsk t +review
-tsk l +review | tsk t -review
-```
-
-Bulk assignment:
-
-```sh
-tsk l @ace +backend | tsk assign lorenzo
-```
-
-Bulk due date:
-
-```sh
-tsk l 'release docs' | tsk due 'next monday'
-```
-
-Narrow an existing selection:
-
-```sh
-tsk l @ace | tsk report +owner:michele
-```
-
-Task IDs received from stdin are validated against real task files before they are used.
-
----
-
-## Task bodies and editing
-
-A body is just Markdown.
-
-Create one from stdin:
-
-```sh
-cat <<'TASK_BODY' | tsk a Investigate login timeout +work +next
-Reproduce through the VPN.
-
-## Check
-
-- DNS
-- proxy timeout
-- OAuth refresh
-TASK_BODY
-```
-
-Show a task:
-
-```sh
-tsk s login
-```
-
-`tsk s` uses `mdcat` when available and otherwise falls back to `cat`.
-
-Force plain output:
-
-```sh
-tsk ss login
-```
-
-Edit one task in `$EDITOR`:
-
-```sh
-tsk e login
-```
-
-With no filter, `tsk e` opens the most recently created task:
+If the selection is ambiguous, the editor is **not** opened. With no filter, `tsk e` opens the latest task:
 
 ```sh
 tsk e
 ```
 
----
-
-## State and due dates
-
-### Complete and reopen
+## Completing and reopening
 
 ```sh
-tsk done oauth
-tsk open oauth
+tsk done xbHi
+tsk open xbHi
 ```
 
-Short aliases:
+These commands also accept a task list on stdin:
 
 ```sh
-tsk c oauth
-tsk u oauth
+tsk l +obsolete | tsk done
 ```
 
-Completion is represented by the semantic done tag; tasks are not moved to a special archive directory.
+Completion is stored as the `+done` tag. Nothing is moved to a separate archive.
 
-### Due dates
+## Due dates
+
+Set a deadline using an absolute or GNU `date`-compatible relative expression:
 
 ```sh
-tsk due 2026-09-04 oauth
-tsk due tomorrow oauth
-tsk due 'next monday' oauth
+tsk due 2026-10-05 xbHi
+tsk due tomorrow xbHi
+tsk due 'next monday' xbHi
 ```
 
-Relative values are normalized before storage, so the task contains an absolute tag:
+The stored tag is always normalized to `YYYY-MM-DD`.
+
+Remove the deadline with:
+
+```sh
+tsk due - xbHi
+```
+
+Pipelines work here too:
+
+```sh
+tsk l +release | tsk due friday
+```
+
+## Changing tags
+
+Tag changes deliberately require a task selection on stdin:
+
+```sh
+tsk l vpn | tsk t +next
+tsk l +old | tsk t -+old
+tsk l +backend | tsk t +work -+someday
+```
+
+The syntax is intentionally strict:
 
 ```text
-+due:2026-09-07
++foo     add +foo
+-+foo    remove +foo
 ```
 
-Remove a due date with:
+There is no legacy `-foo` removal syntax.
+
+## Deleting tasks
 
 ```sh
-tsk due - oauth
+tsk d xbHi
 ```
 
-Humans can say “next Monday”. Files should not wake up on Tuesday with a different interpretation.
-
----
-
-## Projects and hierarchy
-
-A project is simply a task tagged `+project`:
+When used interactively, deletion asks for confirmation. A piped selection can be deleted in bulk:
 
 ```sh
-tsk a ACE certification +project +work
+tsk l +discard | tsk d
 ```
 
-Create a child task:
+## Task directory
+
+Print the effective task directory with:
 
 ```sh
-tsk a Implement certification API +work +next
-tsk l 'Implement certification API' | tsk link parent 'ACE certification'
+tsk dir
 ```
 
-Create another level:
+This is especially useful for extensions and shell scripts:
 
 ```sh
-tsk a Integration tests +work
-tsk l 'Integration tests' | tsk link parent 'Implement certification API'
+cd "$(tsk dir)"
 ```
 
-Then:
+## Integrity check
 
-```sh
-tsk tree @ace
-```
-
-can produce:
-
-```text
-[ ] [P1] ACE certification
-  [ ] [A1] Implement certification API
-    [ ] [T1] Integration tests
-```
-
-Project membership is structural: descendants belong to the project through `+parent:`. You do not need to copy a project tag onto every task.
-
-Remove a parent:
-
-```sh
-tsk l 'Integration tests' | tsk unlink parent
-```
-
-Parent cycles are rejected.
-
----
-
-## Dependencies and links
-
-Hierarchy answers **“what is this part of?”**.
-
-Dependencies answer **“what must happen first?”**.
-
-Generic links answer **“what else is related?”**.
-
-### Dependency
-
-```sh
-tsk l deploy | tsk link depends 'integration tests'
-```
-
-If `integration tests` is not done, `deploy` is automatically considered blocked.
-
-Remove the relation:
-
-```sh
-tsk l deploy | tsk unlink depends 'integration tests'
-```
-
-Dependency cycles are rejected.
-
-### Generic relation
-
-```sh
-tsk l docs | tsk link related api
-```
-
-`related` is an alias for relation type `link`.
-
-```sh
-tsk l docs | tsk unlink link api
-```
-
-### Inspect one task in context
-
-```sh
-tsk i deploy
-```
-
-`info` shows the task plus relevant context such as owner, state, parent, children, dependencies, blockers, and related tasks.
-
----
-
-## Panoramic views
-
-A list answers “what exists?”. The other views answer more useful questions.
-
-### `tree`: how is the work structured?
-
-```sh
-tsk tree
-tsk tree @ace
-tsk tree +work
-```
-
-`tree` renders the parent/child hierarchy.
-
-### `report`: what is the state of this selection?
-
-```sh
-tsk report
-tsk r @ace
-tsk r @ace +work -+done
-```
-
-A report summarizes:
-
-* total, open, and done tasks;
-* due and overdue tasks;
-* blocked tasks and blockers;
-* roots and subtree counts;
-* tag frequencies.
-
-The filters define the report universe.
-
-### `agenda`: what deserves attention now?
-
-```sh
-tsk agenda
-tsk agenda @ace
-tsk agenda +owner:michele
-```
-
-The agenda focuses on:
-
-1. overdue tasks;
-2. tasks due today;
-3. blocked or `+waiting` tasks;
-4. actionable `+next` tasks.
-
-A blocked task tagged `+next` is shown under blocked work, not twice.
-
-### `portfolio`: how are the projects doing?
-
-```sh
-tsk portfolio
-```
-
-Example:
-
-```text
-PROJECTS  3
-
-  OPEN  BLOCKED  OVERDUE  PROJECT
-     6        1        1  [ ] [P1] ACE
-     3        0        0  [ ] [P2] tsk
-     8        2        0  [ ] [P3] Issue Syncer
-```
-
-Counts include each selected project's whole descendant tree.
-
-Filters work here too:
-
-```sh
-tsk portfolio +work
-tsk portfolio @ace
-```
-
-The heavier views use a temporary metadata snapshot instead of repeatedly reparsing the whole archive, so `tree`, `report`, `agenda`, and portfolio views remain quick as the task collection grows.
-
----
-
-## Team mode
-
-Team mode keeps exactly the same storage model. The only new persistent concept is ownership:
-
-```text
-+owner:michele
-```
-
-Set your local identity:
-
-```sh
-export TSK_USER=michele
-```
-
-### Assign work
-
-```sh
-tsk assign lorenzo oauth
-```
-
-or:
-
-```sh
-tsk l @ace +backend | tsk assign lorenzo
-```
-
-Assign to yourself:
-
-```sh
-tsk assign me oauth
-```
-
-Assignment replaces any existing owner. One task, at most one owner.
-
-### Claim work
-
-`claim` uses `TSK_USER` and refuses tasks already owned by someone else.
-
-A safe pattern is:
-
-```sh
-tsk unassigned +next | tsk claim
-```
-
-If ownership must change, do it explicitly:
-
-```sh
-tsk assign michele oauth
-```
-
-No silent task stealing. Civilization survives another day.
-
-### Release work
-
-```sh
-tsk unassign oauth
-```
-
-Alias:
-
-```sh
-tsk release oauth
-```
-
-### My agenda
-
-```sh
-tsk mine
-```
-
-uses `TSK_USER` and shows your agenda.
-
-```sh
-tsk mine @ace
-tsk mine +work
-```
-
-### Unassigned work
-
-```sh
-tsk unassigned
-tsk unassigned @ace
-```
-
-Project-root tasks are ignored because a project is normally a container/result rather than somebody's work item.
-
-### Owner portfolio
-
-```sh
-tsk portfolio --owners
-```
-
-Example:
-
-```text
-OWNERS  3
-
-  OPEN  NEXT  BLOCKED  OVERDUE  OWNER
-     8     3        1        0  lorenzo
-     5     2        0        1  michele
-     2     1        0        0  (unassigned)
-```
-
-Filter it by project or metadata:
-
-```sh
-tsk portfolio --owners @ace
-```
-
-### Ownership policies
-
-Require every non-project task to have an owner during `tsk check`:
-
-```sh
-export TSK_REQUIRE_OWNER=1
-```
-
-Automatically assign newly created non-project tasks to yourself:
-
-```sh
-export TSK_USER=michele
-export TSK_AUTO_ASSIGN=1
-```
-
-Now:
-
-```sh
-tsk a Implement endpoint +next
-```
-
-gets:
-
-```text
-+owner:michele
-```
-
-Project roots are intentionally not auto-assigned.
-
-### Recommended team vocabulary
-
-A small vocabulary is usually enough:
-
-```text
-+project          project root
-+owner:name       responsibility
-+next             actionable now
-+waiting          waiting outside the tracked dependency graph
-+depends:ID       blocked by another tracked task
-+due:DATE         real deadline
-+done             completed
-```
-
-If your workflow eventually needs seventeen states, `tsk` will not physically stop you. It may judge you quietly.
-
----
-
-## Git synchronization
-
-A task directory can be a normal Git repository.
-
-```sh
-cd "$TSK_DIR"
-git init
-git add .
-git commit -m 'initial tasks'
-```
-
-Run Git inside `TSK_DIR` through:
-
-```sh
-tsk g status
-tsk g log --oneline
-tsk g diff
-```
-
-Synchronize with:
-
-```sh
-tsk sync
-```
-
-Historical short alias:
-
-```sh
-tsk y
-```
-
-Optional commit message:
-
-```sh
-tsk sync 'update ACE tasks'
-```
-
-The workflow is:
-
-```text
-stage local changes
-        ↓
-commit when needed
-        ↓
-pull --rebase
-        ↓
-push
-```
-
-One-file-per-task works nicely with Git: two people editing different tasks normally touch different files.
-
-If two people edit the same task incompatibly, Git can produce a conflict. `tsk` leaves that conflict for explicit manual resolution rather than inventing a policy about whose deadline or owner wins.
-
-Git history also becomes a useful audit trail:
-
-```sh
-tsk g log --stat
-tsk g log -p -- path/to/task.tsk.md
-```
-
----
-
-## Integrity checking
+`check` is intentionally kept out of the everyday workflow, but is useful after manual file editing or in tests:
 
 ```sh
 tsk check
 ```
 
-checks the archive for problems including:
-
-* invalid task IDs;
-* empty titles;
-* malformed or duplicate tags;
-* multiple parents;
-* multiple due dates or invalid dates;
-* multiple or invalid owners;
-* broken relations;
-* self-relations;
-* parent cycles;
-* dependency cycles;
-* missing owners when `TSK_REQUIRE_OWNER=1`.
-
-Healthy output:
+A healthy archive prints:
 
 ```text
 ok: no problems found
 ```
 
-For a shared repository, `tsk check` is a good candidate for CI or a Git hook:
+It checks the basic invariants of the simple file format, including titles, tag syntax, duplicate tags, and due dates.
+
+## Pipes are part of the interface
+
+`tsk l` output can be fed back into commands that operate on selections:
 
 ```sh
-#!/bin/sh
-exec tsk check
+tsk l +work | tsk r
+tsk l vpn | tsk done
+tsk l +work | tsk t +next
+tsk l +home | tsk due tomorrow
 ```
 
-Plain text gets freedom. `tsk check` gets the clipboard and safety goggles.
+This is not an accidental implementation detail. It is one of the main interfaces of `tsk`.
 
----
+Build a list with `l`; do something with it.
 
-## fzf and extensions
+## Extensions
 
-`tsk` has a deliberately tiny external-command mechanism.
+The core deliberately knows very little.
 
-If you run:
-
-```sh
-tsk foo
-```
-
-and an executable called:
+If `tsk` receives an unknown command, it looks for an executable named `tsk-COMMAND` in `PATH`:
 
 ```text
-tsk-foo
+tsk fzf  ->  tsk-fzf
+tsk git  ->  tsk-git
+tsk y    ->  tsk-y
 ```
 
-exists in `PATH`, `tsk` runs it.
-
-This keeps optional interfaces outside the core.
+This is how optional features stay optional.
 
 ### `tsk-fzf`
 
-Install a `tsk-fzf` executable in `PATH` and use:
+`tsk-fzf` is a small interactive selector built on [`fzf`](https://github.com/junegunn/fzf).
 
 ```sh
 tsk fzf
-tsk fzf @ace
-tsk fzf @ace +next
+tsk fzf +work
+tsk fzf +work -+done
+tsk fzf -q resolver
 ```
 
-An fzf frontend is a natural place for fuzzy selection, preview, multi-select, edit/show actions, tagging, due dates, and quick state changes.
-
-Core `tsk` remains a script. `fzf` remains frighteningly good at selecting things. Everyone stays in their lane.
-
-### Other tools
-
-Because tasks are files, the rest of Unix is still available:
+`+tag` and `-+tag` positional arguments are automatically passed to `tsk l` as pre-filters. Use `-f` for any other `tsk` filter:
 
 ```sh
-rg 'postgres|tenant' "$TSK_DIR"
-git -C "$TSK_DIR" grep OAuth
+tsk fzf -f vpn
+tsk fzf -f '~vpn|dns'
 ```
 
-`bat` works well for previews. Graphviz is a natural target for custom dependency graph exporters. Shell aliases are excellent saved views.
+Other positional arguments become the initial fuzzy query.
 
-Text is already a pretty good integration format.
+The interface intentionally has very few actions:
 
----
+```text
+Enter    print selected task(s), in the same format as `tsk l`
+Tab      multi-select
+Ctrl-e   edit current task
+Ctrl-a   add a task, using the current query as a suggestion
+Ctrl-d   mark selected task(s) done
+Alt-p    show/hide the preview
+```
 
-## Environment variables
+The preview starts **hidden**. When enabled it displays the raw Markdown through `tsk s`.
 
-| Variable            | Purpose                                      | Default                          |
-| ------------------- | -------------------------------------------- | -------------------------------- |
-| `TSK_DIR`           | task directory                               | `$HOME/.tsk`                     |
-| `EDITOR`            | editor for `tsk e`                           | `vi`                             |
-| `TSK_CATCMD`        | task renderer for `tsk s`                    | `mdcat` if available, else `cat` |
-| `TSK_DONE_TAG`      | completion tag name                          | `done`                           |
-| `TSK_USER`          | local team identity                          | unset                            |
-| `TSK_REQUIRE_OWNER` | make missing owners a `check` error when `1` | `0`                              |
-| `TSK_AUTO_ASSIGN`   | auto-assign new non-project tasks when `1`   | `0`                              |
-| `TSK_DEBUG`         | diagnostic output when set                   | unset                            |
+The reduced binding set is intentional: if an operation is uncommon, exit fzf and use the normal CLI rather than turning the selector into another task-management UI to learn.
 
-Typical personal setup:
+Environment variables:
+
+```text
+TSK_FZF_FZF       fzf executable (default: fzf)
+TSK_FZF_HISTORY   fzf history file (default: ~/.fzfhistory-tsk)
+```
+
+### `tsk-git`
+
+A tiny wrapper that runs Git in the current task directory:
 
 ```sh
-export TSK_DIR="$HOME/.tsk"
-export EDITOR=vis
+tsk git status
+tsk git diff
+tsk git log --oneline
 ```
 
-Typical team setup:
+It is essentially:
 
 ```sh
-export TSK_DIR="$HOME/src/team-tasks"
-export TSK_USER=michele
-export TSK_REQUIRE_OWNER=1
+git -C "$(tsk dir)" ...
 ```
 
-Optional auto-assignment:
+### `tsk-y`
+
+`tsk-y` is a convenience sync script for a Git-backed task directory:
 
 ```sh
-export TSK_AUTO_ASSIGN=1
+tsk y
+tsk y update tasks
 ```
 
----
+It stages changes, commits them, then runs `git pull` and `git push`. It is intentionally external because Git synchronization policy is not part of the task-manager core.
+
+## Environment
+
+The core understands only two user-facing environment variables:
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `TSK_DIR` | task directory | `$HOME/.tsk` |
+| `EDITOR` | editor used by `tsk e` | `vi` |
+
+That is the whole configuration surface of the core.
 
 ## Command reference
 
-### Tasks
+```text
+tsk                         daily view
+tsk r [FILTERS...]          review a filtered/piped selection
+tsk a TITLE [TAGS...]       add task
+tsk l [OPTIONS] [FILTERS]   list tasks
+tsk s FILTERS...            cat task file(s) unchanged
+tsk e [FILTERS...]          edit one task; latest when omitted
+tsk done FILTERS...         complete tasks
+tsk open FILTERS...         reopen tasks
+tsk due DATE FILTERS...     set deadline; '-' removes it
+tsk t CHANGES...            modify tags on tasks from stdin
+tsk d FILTERS...            delete tasks
+tsk dir                     print task directory
+tsk check                   validate task files
+tsk h                       help
+```
+
+List options:
 
 ```text
-tsk l [filters...]                 list tasks
-tsk ll [filters...]                search task bodies
-tsk a <title and tags>             add a task
-tsk s [filters...]                 show tasks
-tsk ss [filters...]                show tasks with plain cat output
-tsk e [filters...]                 edit exactly one task
-tsk i [filters...]                 inspect one task and its relations
-tsk d [--force] [filters...]       delete tasks
+--all                       include completed tasks
+--done                      only completed tasks
 ```
 
-Deletion is refused while other tasks reference the selected task unless `--force` is used. Interactive, non-piped deletion asks for confirmation.
-
-### Tags and state
+Filters:
 
 ```text
-tsk t <+tag|-tag>...               modify tags on piped tasks
-tsk done [filters...]              mark done (alias: c)
-tsk open [filters...]              reopen (alias: u)
-tsk due <date|-> [filters...]      set/remove due date
++foo                        exact tag
+-+foo                       exclude exact tag
+text                        case-insensitive literal text
+-text                       exclude literal text
+~REGEX                      case-insensitive regex
+-~REGEX                     exclude regex
+ID                          full or displayed short task ID
 ```
 
-### Team
+## Testing
+
+The repository contains a small black-box test suite for the core:
+
+```sh
+just test
+```
+
+or directly:
+
+```sh
+./tests/test.sh
+```
+
+The tests exercise the CLI rather than internal shell functions, so the implementation can stay small and be refactored without turning tests into another compatibility layer.
+
+## Design philosophy
+
+The useful mental model is intentionally tiny:
 
 ```text
-tsk assign <owner|me> [filters...] assign/transfer ownership
-tsk claim [filters...]             claim as TSK_USER; refuses other owners
-tsk unassign [filters...]          remove owner (alias: release)
-tsk mine [filters...]              agenda for TSK_USER
-tsk unassigned [filters...]        list unowned non-project tasks
+Task       = Markdown file
+Metadata   = +tags on the first line
+Done       = +done
+Focus      = +next
+Deadline   = +due:YYYY-MM-DD
+Selection  = filters and pipes
+Editor     = $EDITOR
+Extensions = tsk-* executables
 ```
 
-### Relations
+That is enough.
 
-Source tasks for `link`/`unlink` are supplied through stdin:
+If you need a project, use a tag. If you need notes, write Markdown. If you need an interactive picker, use `tsk-fzf`. If you need Git, use Git.
 
-```text
-tsk link parent <target filters...>
-tsk link depends <target filters...>
-tsk link link <target filters...>
-tsk link related <target filters...>   # alias for link
-
-tsk unlink parent [target filters...]
-tsk unlink depends <target filters...>
-tsk unlink link <target filters...>
-```
-
-### Views
-
-```text
-tsk tree [filters...]              hierarchy
-tsk report [filters...]            overview (alias: r)
-tsk agenda [filters...]            overdue/today/blocked/next  (alias: ag)
-tsk portfolio [filters...]         project portfolio (alias: p)
-tsk portfolio --owners [filters...] owner workload
-tsk check                          integrity check
-```
-
-### Git and escape hatches
-
-```text
-tsk g <git args...>                run Git inside TSK_DIR
-tsk sync [commit message]          commit, pull --rebase, push
-tsk y [commit message]             alias for sync
-tsk run <command...>               run an arbitrary command
-tsk <name> ...                     run external tsk-<name> from PATH
-```
-
----
-
-## Useful workflows
-
-### Keep a small working set
-
-Your archive may contain hundreds of tasks. Your `+next` set should not.
-
-```sh
-tsk l +next -+done
-tsk agenda
-```
-
-Use `+waiting` when something is externally stalled, and `+depends:` when the blocker is another tracked task.
-
-### Work inside a project
-
-```sh
-tsk tree @ace
-tsk agenda @ace
-tsk report @ace
-```
-
-The `@` filter makes project context cheap enough to use constantly.
-
-### Personal team dashboard
-
-```sh
-tsk mine
-tsk mine @ace
-```
-
-### Team dashboard
-
-```sh
-tsk portfolio
-tsk portfolio --owners
-tsk unassigned
-```
-
-### Safe shared-repository routine
-
-```sh
-tsk check && tsk sync 'update tasks'
-```
-
-### Shell aliases are encouraged
-
-```sh
-alias ta='tsk agenda'
-alias tm='tsk mine'
-alias tp='tsk portfolio'
-alias tpo='tsk portfolio --owners'
-alias tn='tsk l +next -+done'
-```
-
-No points are awarded for typing the same filter twelve times per day.
-
----
-
-## Design notes
-
-### Why one file per task?
-
-Because it gives you readable storage, easy scripting, cheap backups, useful Git history, and fewer merge conflicts than one giant task file.
-
-### Why is a project also a task?
-
-Because a project can already have a title, Markdown notes, a due date, links, children, history, and tags. Introducing a separate project entity would mostly introduce a separate place to keep synchronized.
-
-### Why no stored `blocked` tag?
-
-Because blocked state is a consequence of dependencies. If the dependency becomes done, the task should stop being blocked automatically.
-
-### Why no database?
-
-A database would make some queries easier while making the storage less transparent. For the intended scale—personal use and small technical teams with hundreds or a few thousand tasks—the snapshot-based views are fast enough without giving up plain files.
-
-### Is this Jira?
-
-No.
-
-If you need complex permissions, SLA escalation, comments, attachments, notifications, approval workflows, dozens of custom fields, and a quarterly committee to decide whether yellow means “at risk” or “slightly concerned”, use a system designed for that.
-
-`tsk` is for people who want to type:
-
-```sh
-tsk mine @ace
-```
-
-see the work, and get back to doing it.
-
----
-
-## Philosophy in one screen
-
-```text
-Task                  = Markdown file
-Metadata              = +tags on the first line
-Project               = task tagged +project
-Project membership    = +parent relation
-Dependency            = +depends relation
-Ownership             = +owner:name
-Actionable work       = +next
-External waiting      = +waiting
-Completion            = +done
-Deadline              = +due:YYYY-MM-DD
-Search                = filters + ll
-Automation            = pipes
-Interactive UI        = fzf, if desired
-Synchronization       = Git
-Integrity             = tsk check
-```
-
-Small model. Useful consequences.
-
-Now go finish a task.
+And if managing the task manager starts taking longer than doing the task, something has gone wrong.
