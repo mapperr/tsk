@@ -1,6 +1,6 @@
 #!/bin/sh
 
-version="2.1.1"
+version="2.1.2"
 tskdir="${TSK_DIR:-$HOME/.tsk}"
 editor="${EDITOR:-vi}"
 tmpdir="${TMPDIR:-/tmp}"
@@ -350,7 +350,7 @@ _review() (
         function rel(id,n) {
             if(due[id]==""||due[id]==today||due[id]==tomorrow)return ""
             n=daynum(due[id])-todayn
-            return n<0 ? " (" -n "d late)" : " (" n "d)"
+            return n < 0 ? sprintf(" (%dd late)", -n) : sprintf(" (%dd)", n)
         }
         function line(id,dated,mark,x) {
             x="  "; if(dated)x=x mark " " due[id] " "
