@@ -42,7 +42,8 @@ list_tasks() {
         done <"$TSK_FZF_FILTER_FILE"
     fi
 
-    tsk l "$@" | awk '
+    tasks=$(tsk l "$@") || return $?
+    printf '%s\n' "$tasks" | awk '
         /^\[[^]]+\][[:space:]]/ {
             p = index($0, "] ")
             id = substr($0, 2, p - 2)
@@ -86,13 +87,13 @@ add_task() {
     IFS=' '
     set -- $task
     IFS=$oldifs
-    tsk a "$@" || return 1
-    tsk e
+    tsk a "$@" </dev/null || return 1
+    tsk e </dev/tty
 }
 
 mark_done() {
     [ "$#" -gt 0 ] || return 0
-    pipe_ids "$@" | tsk done
+    pipe_ids "$@" | tsk 'done'
 }
 
 case "${1:-}" in
@@ -143,7 +144,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-export TSK_FZF_FILTER_FILE=$filter_file
+export TSK_FZF_FILTER_FILE="$filter_file"
 TSK_FZF_SELF=$0
 export TSK_FZF_SELF
 

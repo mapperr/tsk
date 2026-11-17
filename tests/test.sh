@@ -2,7 +2,7 @@
 set -u
 exec </dev/null
 
-ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 TSK=${TSK_BIN:-$ROOT/tsk}
 
 pass=0
@@ -85,7 +85,7 @@ set -e
 assert_status 'old -tag removal syntax is rejected' 1 "$rc"
 
 # done/open/due.
-$TSK done A001 >/dev/null 2>&1
+$TSK 'done' A001 >/dev/null 2>&1
 out=$($TSK l --done A001)
 assert_contains 'done marks task completed' "$out" '+done'
 $TSK open A001 >/dev/null 2>&1
@@ -189,4 +189,5 @@ PATH="$work:$PATH" out=$($TSK hello world)
 assert_eq 'external tsk-* command dispatch' 'hello world' "$out"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
-[ "$fail" -eq 0 ]
+[ "$fail" -eq 0 ] || exit 1
+python3 "$ROOT/tests/regressions.py"

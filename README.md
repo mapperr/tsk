@@ -84,9 +84,13 @@ Override that with:
 export TSK_DIR="$HOME/tasks"
 ```
 
-The editor used by `tsk e` comes from `$EDITOR`, falling back to `vi`.
+The editor used by `tsk e` comes from `$EDITOR`, falling back to `vi`. Editor
+arguments are supported, for example `EDITOR='code --wait'`. When editing a piped
+selection, the editor reads from the terminal if one is available.
 
-`tsk` targets a normal Linux command-line environment and uses GNU `date` for relative dates such as `tomorrow` and `next monday`.
+`tsk` targets Linux and requires GNU coreutils (including `date`, `cp`, and
+`mv`), a POSIX awk, and `flock` from util-linux. GNU `date` handles relative dates
+such as `tomorrow` and `next monday`.
 
 ## Task files
 
@@ -117,6 +121,11 @@ Document the differences between the old and new rules packages.
 ```
 
 You can inspect the files with any normal Unix tool. `tsk` does not own the data format; it merely makes it convenient.
+
+Metadata updates replace each task file atomically and preserve its permissions
+and Markdown body. CLI writers, `tsk e`, and `tsk y` share a lock on the task
+directory. Changes made directly by other tools do not participate in this lock.
+Metadata updates require writable regular files and reject symbolic links.
 
 ## Daily view
 
@@ -174,6 +183,9 @@ The file stores an absolute date:
 ```text
 Renew certificate +work +due:2026-09-30
 ```
+
+Quoting the whole first line works too: `tsk a 'Renew certificate +work +due:tomorrow'`.
+Empty titles, multiline titles, and malformed tags are rejected before creation.
 
 A body can be supplied on stdin:
 
@@ -362,6 +374,10 @@ The syntax is intentionally strict:
 
 There is no legacy `-foo` removal syntax.
 
+All requested tag changes are validated before any task is updated. If a write
+fails during a bulk operation, the command stops with a nonzero exit status;
+earlier successful updates are retained.
+
 ## Deleting tasks
 
 ```sh
@@ -402,7 +418,8 @@ A healthy archive prints:
 ok: no problems found
 ```
 
-It checks the basic invariants of the simple file format, including titles, tag syntax, duplicate tags, and due dates.
+It checks titles, task IDs, tag syntax, duplicate tags, calendar dates, and
+unresolved Git conflict markers anywhere in task files. An empty archive is valid.
 
 ## Pipes are part of the interface
 
@@ -500,7 +517,17 @@ tsk y
 tsk y update tasks
 ```
 
-It stages changes, commits them, then runs `git pull` and `git push`. It is intentionally external because Git synchronization policy is not part of the task-manager core.
+The task directory must be the root of its own Git repository, with an upstream
+configured. This prevents staging unrelated files from a containing repository.
+
+`tsk-y` validates the archive, stages changes, commits if needed, then pulls with
+an explicit merge policy and pushes. Pull and push also run when there is nothing
+new to commit. The merged archive is validated again before pushing.
+
+Unresolved conflicts and unfinished merges, rebases, cherry-picks, or reverts stop
+the sync before staging. Resolve and finish the Git operation with Git before
+running `tsk y` again. It is intentionally external because Git synchronization
+policy is not part of the task-manager core.
 
 ## Environment
 
@@ -553,7 +580,8 @@ ID                          full or displayed short task ID
 
 ## Testing
 
-The repository contains a small black-box test suite for the core:
+The repository contains black-box tests for the core and extensions. Running the
+tests requires Python 3 and Git in addition to the runtime dependencies:
 
 ```sh
 just test
@@ -565,7 +593,9 @@ or directly:
 ./tests/test.sh
 ```
 
-The tests exercise the CLI rather than internal shell functions, so the implementation can stay small and be refactored without turning tests into another compatibility layer.
+The tests exercise the CLI, including failed writes, concurrent updates, editor
+terminal handling, and Git synchronization against temporary local repositories.
+They leave the user's task archive untouched. CI runs them before mirroring.
 
 ## Design philosophy
 

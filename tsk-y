@@ -1,7 +1,36 @@
 #!/bin/sh
-msg="$@"
-[ -z "$msg" ] && msg=sync
-git -C "$(tsk dir)" add -A &&
-git -C "$(tsk dir)" commit -m "$msg" &&
-git -C "$(tsk dir)" pull &&
-git -C "$(tsk dir)" push
+set -eu
+
+die() { printf 'tsk-y: error: %s\n' "$1" >&2; exit 1; }
+msg=$*
+[ -n "$msg" ] || msg=sync
+tskdir=$(tsk dir)
+tskdir=$(CDPATH='' cd -- "$tskdir" && pwd -P)
+git_task() { git -C "$tskdir" "$@"; }
+
+# The same directory lock is held by CLI writers and editors.
+exec 9<"$tskdir"
+flock -x 9
+root=$(git_task rev-parse --show-toplevel)
+[ "$root" = "$tskdir" ] || die 'task directory must be the root of its Git repository'
+unmerged=$(git_task diff --name-only --diff-filter=U)
+[ -z "$unmerged" ] || die 'resolve Git conflicts before syncing'
+for state in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
+    state_path=$(git_task rev-parse --git-path "$state")
+    case "$state_path" in /*) ;; *) state_path="$tskdir/$state_path" ;; esac
+    [ ! -e "$state_path" ] || die 'finish the current Git operation before syncing'
+done
+tsk check
+
+git_task add -A
+if git_task diff --cached --quiet; then
+    :
+else
+    status=$?
+    [ "$status" -eq 1 ] || exit "$status"
+    git_task commit -m "$msg"
+fi
+# Use a deterministic merge policy even when pull.rebase is not configured.
+git_task pull --no-rebase --no-edit
+tsk check
+git_task push
