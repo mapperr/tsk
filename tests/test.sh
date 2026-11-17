@@ -191,3 +191,4 @@ assert_eq 'external tsk-* command dispatch' 'hello world' "$out"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
 python3 "$ROOT/tests/regressions.py"
+python3 "$ROOT/tests/product.py"

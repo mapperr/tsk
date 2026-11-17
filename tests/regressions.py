@@ -215,7 +215,7 @@ class Core(Archive):
         owner = path.stat().st_uid
         result = self.cli("done", "A001")
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(b"Alpha +work +done\n" + body, path.read_bytes())
+        self.assertEqual(f"Alpha +work +done +completed:{datetime.date.today()}\n".encode() + body, path.read_bytes())
         self.assertEqual(0o640, stat.S_IMODE(path.stat().st_mode))
         self.assertEqual(owner, path.stat().st_uid)
         self.assertEqual(group, path.stat().st_gid)
@@ -277,7 +277,7 @@ esac''')
         self.assertEqual(0, result.returncode, result.stderr)
         paths = list(self.tasks.glob("*.tsk.md"))
         tomorrow = datetime.date.today() + datetime.timedelta(days=1)
-        self.assertEqual(f"Quoted title +work +due:{tomorrow}\n", paths[0].read_text())
+        self.assertEqual(f"Quoted title +work +due:{tomorrow} +inbox\n", paths[0].read_text())
         self.assertEqual(0, self.cli("check").returncode)
 
     def test_invalid_headers_never_create_tasks(self):
@@ -394,6 +394,285 @@ esac''')
         status, output = self.terminal([TSK, "d", "A001"], reply=b"y\n")
         self.assertEqual(0, status, output)
         self.assertFalse(path.exists())
+
+
+class TagCatalogue(Archive):
+    def setUp(self):
+        super().setUp()
+        self.task("Alpha +work +project:ace +owner:anna\n\nBody mentions +ghost\n")
+        self.task("Beta +work +work +project:tsk +owner:luca\n", "B002")
+        self.task("Finished +work +project:ace +owner:anna +done\n", "C003")
+
+    def test_default_counts_open_tasks_once_per_tag_in_alphabetical_order(self):
+        result = self.cli("tags")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            "+owner:anna\t1\n+owner:luca\t1\n+project:ace\t1\n+project:tsk\t1\n+work\t2\n",
+            result.stdout,
+        )
+
+    def test_all_includes_completed_tasks(self):
+        result = self.cli("tags", "--all")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            "+done\t1\n+owner:anna\t2\n+owner:luca\t1\n+project:ace\t2\n+project:tsk\t1\n+work\t3\n",
+            result.stdout,
+        )
+
+    def test_done_only_counts_completed_tasks(self):
+        result = self.cli("tags", "--done")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("+done\t1\n+owner:anna\t1\n+project:ace\t1\n+work\t1\n", result.stdout)
+
+    def test_namespace_matches_the_exact_key(self):
+        self.task("Other +project +project_extra:test\n", "D004")
+        result = self.cli("tags", "project")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("+project:ace\t1\n+project:tsk\t1\n", result.stdout)
+
+    def test_names_omit_counts_and_compose_with_namespace_and_status(self):
+        result = self.cli("tags", "--all", "--names", "project")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("+project:ace\n+project:tsk\n", result.stdout)
+
+    def test_piped_selection_narrows_counts(self):
+        selection = self.cli("l", "+project:ace").stdout
+        result = self.cli("tags", data=selection)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("+owner:anna\t1\n+project:ace\t1\n+work\t1\n", result.stdout)
+
+    def test_completed_piped_selection_uses_the_requested_mode(self):
+        result = self.cli("tags", "--all", "project", data="A001\nC003\nC003\n")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("+project:ace\t2\n", result.stdout)
+
+    def test_case_variants_remain_visible(self):
+        self.task("Different spelling +Work\n", "D004")
+        self.assertIn("+Work\t1\n", self.cli("tags").stdout)
+        self.assertIn("+work\t2\n", self.cli("tags").stdout)
+
+    def test_unknown_namespace_or_empty_selection_is_empty(self):
+        self.assertEqual("", self.cli("tags", "unknown").stdout)
+        self.assertEqual("", self.cli("tags", data="").stdout)
+
+    def test_invalid_arguments_are_rejected(self):
+        for args in [("--unknown",), ("project", "owner"), ("project:ace",), ("",)]:
+            with self.subTest(args=args):
+                self.assertNotEqual(0, self.cli("tags", *args).returncode)
+
+    def test_catalogue_errors_propagate(self):
+        self.shim("awk", "exit 1")
+        result = self.cli("tags")
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("", result.stdout)
+
+    def test_missing_archive_is_empty_and_is_not_created(self):
+        self.env["TSK_DIR"] = str(self.work / "absent")
+        result = self.cli("tags")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("", result.stdout)
+        self.assertFalse((self.work / "absent").exists())
+
+
+class DirectTags(Archive):
+    def setUp(self):
+        super().setUp()
+        self.path = self.task()
+        self.other = self.task("Beta mentions A001 +home\n", "B002")
+
+    def test_short_id_changes_only_the_exact_task(self):
+        other = self.other.read_bytes()
+        result = self.cli("t", "A001", "+next", "-+work")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("Alpha +next\n\nNotes  \n", self.path.read_text())
+        self.assertEqual(other, self.other.read_bytes())
+
+    def test_full_id_is_accepted(self):
+        result = self.cli("t", self.path.name.removesuffix(".tsk.md"), "+due:tomorrow")
+        self.assertEqual(0, result.returncode, result.stderr)
+        tomorrow = datetime.date.today() + datetime.timedelta(days=1)
+        self.assertIn(f"+due:{tomorrow}", self.path.read_text())
+
+    def test_explicit_id_takes_precedence_over_stdin(self):
+        original = self.path.read_bytes()
+        result = self.cli("t", "B002", "+next", data="A001\n")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(original, self.path.read_bytes())
+        self.assertIn("+next", self.other.read_text())
+
+    def test_unknown_partial_empty_and_title_selectors_never_modify_tasks(self):
+        original = self.path.read_bytes()
+        other = self.other.read_bytes()
+        for target in ["unknown", "A00", "Alpha", "", "A001\\n"]:
+            with self.subTest(target=target):
+                result = self.cli("t", target, "+next", data="A001\n")
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual(original, self.path.read_bytes())
+                self.assertEqual(other, self.other.read_bytes())
+
+    def test_colliding_suffix_requires_a_full_id(self):
+        collision = self.tasks / "20261117090100000-A001.tsk.md"
+        collision.write_text("Collision +work\n")
+        self.assertNotEqual(0, self.cli("t", "A001", "+next").returncode)
+        self.assertEqual("Alpha +work\n\nNotes  \n", self.path.read_text())
+        result = self.cli("t", self.path.name.removesuffix(".tsk.md"), "+next")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("Collision +work\n", collision.read_text())
+
+    def test_completed_tasks_can_be_updated(self):
+        self.path.write_text("Alpha +done\n")
+        result = self.cli("t", "A001", "+owner:anna")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("Alpha +done +owner:anna\n", self.path.read_text())
+
+    def test_entire_request_is_validated_before_updating(self):
+        original = self.path.read_bytes()
+        for changes in [(), ("+next", "-invalid"), ("+next", "+due:2026-02-30")]:
+            with self.subTest(changes=changes):
+                self.assertNotEqual(0, self.cli("t", "A001", *changes).returncode)
+                self.assertEqual(original, self.path.read_bytes())
+
+    def test_changes_without_id_still_require_a_piped_selection(self):
+        self.assertNotEqual(0, self.cli("t", "+next").returncode)
+        result = self.cli("t", "+next", data="A001\nB002\n")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("+next", self.path.read_text())
+        self.assertIn("+next", self.other.read_text())
+
+
+class BashCompletion(Archive):
+    def setUp(self):
+        super().setUp()
+        self.task("Alpha +work +project:ace\n")
+        self.task("Finished +home +project:old +done\n", "B002")
+        self.completion = ROOT / "completions" / "tsk.bash"
+
+    def complete(self, *words, wordbreaks=":"):
+        script = r'''
+set -eu
+source "$1"
+shift
+cd "$TMPDIR"
+COMP_WORDBREAKS=$1
+before=$COMP_WORDBREAKS
+shift
+COMP_WORDS=("$@")
+COMP_CWORD=$((${#COMP_WORDS[@]}-1))
+_tsk_complete
+[[ $COMP_WORDBREAKS == "$before" ]] || exit 99
+if ((${#COMPREPLY[@]})); then printf '%s\n' "${COMPREPLY[@]}"; fi
+'''
+        result = self.run_program(["bash", "--noprofile", "--norc", "-c", script, "bash", self.completion, wordbreaks, *words])
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("", result.stderr)
+        return result.stdout.splitlines()
+
+    def test_commands_include_the_catalogue_and_installed_extensions(self):
+        extension = self.bin / "tsk-hello"
+        extension.write_text("#!/bin/sh\nexit 0\n")
+        extension.chmod(0o755)
+        replies = self.complete("tsk", "")
+        self.assertIn("tags", replies)
+        self.assertIn("hello", replies)
+        self.assertIn("fzf", replies)
+        self.assertEqual(len(replies), len(set(replies)))
+
+    def test_command_prefix(self):
+        self.assertEqual(["tags"], self.complete("tsk", "ta"))
+
+    def test_existing_tags_and_builtins_are_completed(self):
+        self.assertEqual({"+work", "+wait"}, set(self.complete("tsk", "a", "Fix", "+w")))
+        self.assertEqual(["+next"], self.complete("tsk", "t", "A001", "+n"))
+        self.assertEqual({"-+work", "-+wait"}, set(self.complete("tsk", "t", "A001", "-+w")))
+        self.assertIn("-+work", self.complete("tsk", "t", "A001", "-"))
+
+    def test_namespace_values_are_trimmed_for_readline(self):
+        self.assertEqual(["ace"], self.complete("tsk", "l", "+project", ":", "ac"))
+        self.assertEqual(["ace", "old"], self.complete("tsk", "l", "+project", ":"))
+        self.assertEqual(["ace"], self.complete("tsk", "t", "A001", "-+project", ":", "a"))
+
+    def test_namespace_values_work_without_colon_word_breaks(self):
+        self.assertEqual(["+project:ace"], self.complete("tsk", "l", "+project:ac", wordbreaks=""))
+
+    def test_completion_after_a_namespaced_filter_starts_a_new_argument(self):
+        replies = self.complete("tsk", "l", "+project", ":", "ace", "")
+        self.assertIn("+work", replies)
+        self.assertIn("A001", replies)
+
+    def test_task_ids_follow_command_status_modes(self):
+        for words, expected in [
+            (("l", "A"), ["A001"]), (("l", "B"), []),
+            (("l", "--all", "B"), ["B002"]), (("l", "--done", "B"), ["B002"]),
+            (("open", "B"), ["B002"]), (("done", "A"), ["A001"]),
+            (("t", "B"), ["B002"]), (("e", "B"), ["B002"]),
+            (("due", "tomorrow", "B"), ["B002"]),
+        ]:
+            with self.subTest(words=words):
+                self.assertEqual(expected, self.complete("tsk", *words))
+
+    def test_catalogue_completes_namespace_keys_once(self):
+        self.assertEqual(["project"], self.complete("tsk", "tags", "pro"))
+        self.assertEqual([], self.complete("tsk", "tags", "project", ""))
+
+    def test_command_options_are_contextual(self):
+        self.assertEqual({"--all", "--done", "--body", "--ids", "--json", "--group-by", "--sort", "--has", "--without", "--since", "--until", "--all-time"}, set(self.complete("tsk", "l", "--")))
+        self.assertEqual({"--all", "--done", "--names"}, set(self.complete("tsk", "tags", "--")))
+        self.assertIn("--sort", self.complete("tsk", "l", "+work", "--"))
+
+    def test_product_views_and_option_values_are_completed(self):
+        commands = self.complete("tsk", "")
+        for command in ["inbox", "next", "waiting", "backlog", "projects", "team", "unassigned", "report", "browse", "import", "issue", "g"]:
+            self.assertIn(command, commands)
+        self.assertEqual(["project"], self.complete("tsk", "l", "--group-by", "pro"))
+        self.assertEqual(["completed"], self.complete("tsk", "report", "--sort", "comp"))
+        self.assertEqual(["--dry-run"], self.complete("tsk", "t", "--dry"))
+        self.assertEqual(["A001"], self.complete("tsk", "t", "--dry-run", "A"))
+        self.assertEqual(["A001"], self.complete("tsk", "projects", "A"))
+        self.assertEqual(["gitlab"], self.complete("tsk", "import", "--source", "gitl"))
+        self.assertEqual(["set"], self.complete("tsk", "issue", "se"))
+
+    def test_due_date_suggestions_and_unfinished_due_tag(self):
+        self.assertEqual(["tomorrow"], self.complete("tsk", "due", "tom"))
+        self.assertEqual([], self.complete("tsk", "a", "Title", "+due", ":"))
+
+    def test_malformed_ids_are_not_completed_or_evaluated(self):
+        (self.tasks / 'evil$(touch${IFS}completion-owned).tsk.md').write_text("Malformed ID\n")
+        self.assertEqual([], self.complete("tsk", "e", "evil"))
+        self.assertFalse((self.tmp / "completion-owned").exists())
+
+    def test_empty_archive_still_completes_commands_and_builtin_tags(self):
+        self.env["TSK_DIR"] = str(self.work / "absent")
+        self.assertIn("tags", self.complete("tsk", ""))
+        self.assertEqual(["+next"], self.complete("tsk", "a", "Title", "+n"))
+        self.assertFalse((self.work / "absent").exists())
+
+    def test_real_tab_insertion_preserves_namespaces_and_due_prefix(self):
+        rc = self.work / "bashrc"
+        rc.write_text(r'''
+source "$COMPLETION_SCRIPT"
+_capture() {
+    printf '%s\n' "$READLINE_LINE" >"$COMPLETION_LOG"
+    READLINE_LINE=exit
+    READLINE_POINT=4
+}
+bind -x '"\C-x\C-r":_capture'
+PS1='completion> '
+''')
+        log = self.work / "readline.log"
+        self.env["COMPLETION_SCRIPT"] = str(self.completion)
+        self.env["COMPLETION_LOG"] = str(log)
+        for line, expected in [
+            ("tsk l +project:ac", "tsk l +project:ace "),
+            ("tsk t A001 -+project:ac", "tsk t A001 -+project:ace "),
+            ("tsk a Fix +du", "tsk a Fix +due:"),
+        ]:
+            with self.subTest(line=line):
+                status, output = self.terminal(
+                    ["bash", "--noprofile", "--rcfile", rc, "-i"],
+                    reply=line.encode() + b"\t\x18\x12\n", prompt=b"completion> ",
+                )
+                self.assertEqual(0, status, output)
+                self.assertEqual(expected + "\n", log.read_text())
 
 
 class Fzf(Archive):

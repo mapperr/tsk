@@ -24,6 +24,18 @@ header_awk='
     }
 '
 
+body_awk='
+    function task_body(id, path,raw,oldrs,result,pos) {
+        path=ENVIRON["TSK_TASK_DIR"] "/" id ".tsk.md"
+        # An empty-match regexp never splits nonempty input in GNU/BusyBox awk.
+        # A NUL separator instead becomes paragraph mode in BusyBox awk.
+        oldrs=RS; RS="^$"; result=(getline raw < path); close(path); RS=oldrs
+        if(result<0) { print "cannot read task body: " path > "/dev/stderr"; exit 1 }
+        pos=index(raw,"\n")
+        return pos ? substr(raw,pos+1) : ""
+    }
+'
+
 usage() {
     s=$(basename "$0")
     cat <<EOF_USAGE
@@ -34,23 +46,48 @@ usage:
     $s r [FILTERS...]          review a filtered/piped task selection
     $s a TITLE [TAGS...]       add a task
     $s l [OPTIONS] [FILTERS]   list tasks
+    $s inbox|next|backlog      workflow views
+    $s waiting|unassigned     waiting tasks or tasks without an owner
+    $s projects|team          group open tasks by project or owner
+    $s report [OPTIONS]       completed tasks from the last seven days
+    $s tags [OPTIONS] [KEY]    list tags and task counts; optionally KEY: tags
     $s s FILTERS...            cat task file(s) unchanged
     $s e [FILTERS...]          edit one task (latest when omitted)
     $s done FILTERS...         complete tasks
     $s open FILTERS...         reopen tasks
     $s due DATE FILTERS...     set a deadline; DATE '-' removes it
-    $s t CHANGES...            change tags on tasks piped on stdin
+    $s t [ID] CHANGES...       change tags on one ID or tasks piped on stdin
     $s d FILTERS...            delete tasks
     $s dir                     print the current task directory
+    $s g [ARGS...]             alias for the git extension
+    $s issue set ID KEY URL   associate an issue (tsk-issue extension)
+    $s browse [--print] ID    open an issue URL, or print it
+    $s import FILE [OPTIONS] import JSON tasks/issues (use '-' for stdin)
     $s h                       show help
 
 list options:
     --all                      include completed tasks
     --done                     show only completed tasks
+    --group-by KEY             group by a tag namespace, including unassigned
+    --sort FIELD               id, title, due, or completed; undated tasks last
+    --body                     include Markdown notes in text/regex searches
+    --has KEY, --without KEY   require/exclude a tag namespace
+    --ids, --json              full IDs or JSON output (without grouping)
+    --since DATE, --until DATE inclusive completion date range
+    --all-time                 clear the completion date range
+
+mutation options (before DATE, ID, filters, or tag changes):
+    --dry-run                  preview the action, task count and selection
+
+tag catalogue options:
+    --all                      count open and completed tasks
+    --done                     count only completed tasks
+    --names                    print tag names without counts
 
 filters (applied sequentially):
     +foo                       exact tag
     -+foo                      exclude exact tag
+    +key:, -+key:              require/exclude a tag namespace
     text                       case-insensitive literal text
     -text                      exclude literal text
     ~REGEX                     case-insensitive regular expression
@@ -63,12 +100,15 @@ examples:
     $s l +work -+done
     $s l '~vpn|dns'
     $s done A8fQ
+    $s tags project
+    $s t A8fQ +next
     $s l +work | $s t +next
     $s l +work | $s t -+next
 
 Tasks are Markdown files in ${TSK_DIR:-$HOME/.tsk}. The first line is the title
-followed by +tags. Only +done, +next and +due:YYYY-MM-DD have built-in meaning.
-Everything else is just a tag.
+followed by +tags. New tasks enter +inbox unless given a workflow state.
+Workflow tags: +inbox, +next, +backlog, +wait or +wait:PERSON, and +done.
+Dates: +due:YYYY-MM-DD and +completed:YYYY-MM-DD. Other tags are user-defined.
 EOF_USAGE
 }
 
@@ -80,7 +120,8 @@ daily view:
     Running '$s' with no arguments shows overdue tasks, tasks due today,
     tomorrow, within the next 7 days, and +next tasks. Due tasks outside
     TODAY/TOMORROW include a compact relative day count such as '(3d)' or
-    '(2d late)'. Completed tasks are hidden.
+    '(2d late)'. Undated inbox and waiting tasks are shown too. Completed tasks
+    are hidden. A task is shown once, in its deadline section when applicable.
 
 review:
     '$s r [filters...]' renders the same view for a subset. It can consume a
@@ -95,11 +136,23 @@ files:
     output shows a short unique id. The full id is always accepted.
 
 tags:
+    +inbox                     captured, not yet reviewed
     +done                      completed
     +next                      current working set
+    +backlog                   reviewed, deferred work
+    +wait[:PERSON]             waiting for someone or something
     +due:YYYY-MM-DD            real deadline
+    +completed:YYYY-MM-DD      completion date; removed on reopening
 
     All other tags are plain user-defined tags.
+
+views and reports:
+    '$s projects' groups by +project:VALUE; '$s team' groups by +owner:VALUE.
+    '$s waiting' includes +wait and +wait:VALUE. '$s unassigned' finds tasks
+    without +owner:VALUE. These commands accept the same options as '$s l'.
+    '$s report' lists completions from today and the preceding six days; use
+    --since/--until for another period, or --all-time to include undated tasks.
+    List options can appear before or after filters, up to '--'.
 
 pipes:
     '$s l' output can be piped into commands that modify tasks:
@@ -110,11 +163,20 @@ pipes:
         $s l vpn   | $s t -+next
         $s l +home | $s due tomorrow
 
-    In '$s t', '+foo' adds a tag and '-+foo' removes it.
+    In '$s t', '+foo' adds a tag and '-+foo' removes it. An explicit full or
+    displayed ID selects exactly one task; without an ID, pipe a selection.
+
+tag catalogue:
+    '$s tags' lists tags alphabetically with the number of open tasks using
+    each tag. '$s tags project' lists +project:VALUE tags. --all includes
+    completed tasks; --done counts only completed tasks. --names omits counts.
+    A piped task list narrows the catalogue: '$s l +work | $s tags'.
 
 extensions:
     Unknown commands are resolved as external '$s-COMMAND' executables.
     For example, installing '$s-fzf' enables '$s fzf'.
+    '$s g' is an alias for '$s git' and uses the same '$s-git' executable.
+    '$s browse' and '$s import' use the optional Python 3 '$s-issue' extension.
 
 diagnostics:
     $s check                    validate task files
@@ -137,6 +199,7 @@ _stdin_available() { [ -p /dev/stdin ] || [ -f /dev/stdin ]; }
 _ensure_dir() { mkdir -p "$tskdir" || _die "cannot create task directory [$tskdir]"; }
 _task_path() { printf '%s/%s.%s\n' "$tskdir" "$1" "$ext"; }
 _valid_tag() { printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$'; }
+_valid_key() { printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_-]+$'; }
 
 # flock on the directory inode survives atomic task replacement and leaves no
 # lock file to accidentally commit. All CLI writers, editors and tsk-y use it.
@@ -176,7 +239,7 @@ _create_id() {
     done
 }
 
-# Snapshot columns: full-id, short-id, title, done, due, comma-separated-tags.
+# Snapshot columns: full-id, short-id, title, done, due, tags, completion date.
 # A short id is the last '-' component when unique; otherwise the full id is used.
 _build_snapshot() {
     [ -d "$tskdir" ] || return 0
@@ -190,21 +253,22 @@ _build_snapshot() {
         {
             id=FILENAME; sub(/^.*\//,"",id); sub("\\." ext "$","",id)
             parse_header($0)
-            tags=""; done=0; due=""
+            tags=""; done=0; due=""; completed=""
             for (i=1; i<=header_count; i++) {
                 tag=header_tags[i]
                 tags=tags (tags=="" ? "" : ",") tag
                 if (tag=="done") done=1
                 if (substr(tag,1,4)=="due:" && due=="") due=substr(tag,5)
+                if (substr(tag,1,10)=="completed:") completed=substr(tag,11)
             }
             sid=id; sub(/^.*-/,"",sid)
             order[++n]=id; short[id]=sid; count[sid]++
-            titles[id]=header_title; dones[id]=done; dues[id]=due; alltags[id]=tags
+            titles[id]=header_title; dones[id]=done; dues[id]=due; alltags[id]=tags; completions[id]=completed
         }
         END {
             for (i=1; i<=n; i++) {
                 id=order[i]; sid=count[short[id]]==1 ? short[id] : id
-                printf "%s\t%s\t%s\t%d\t%s\t%s\n", id,sid,titles[id],dones[id],dues[id],alltags[id]
+                printf "%s\t%s\t%s\t%d\t%s\t%s\t%s\n", id,sid,titles[id],dones[id],dues[id],alltags[id],completions[id]
             }
         }
     ' "$@"
@@ -253,6 +317,16 @@ _filter() (
     case "$pattern" in
         +*)
             tag=${pattern#+}
+            case "$tag" in
+                *:)
+                    key=${tag%:}; _valid_key "$key" || _die "invalid tag namespace [$key]"
+                    awk -F '\t' -v want="$tag" -v inv="$invert" '
+                        FILENAME==ARGV[1] { tags[$1]=$6; next }
+                        { found=index("," tags[$1], "," want)>0; if ((!inv&&found)||(inv&&!found)) print $1 }
+                    ' "$snapshot" "$input" >"$output"
+                    return $?
+                    ;;
+            esac
             _valid_tag "$tag" || _die "invalid exact tag filter [$pattern]"
             awk -F '\t' -v want="$tag" -v inv="$invert" '
                 FILENAME==ARGV[1] { tags[$1]=$6; next }
@@ -262,9 +336,9 @@ _filter() (
         ~*)
             regex=${pattern#\~}
             [ -n "$regex" ] || _die "empty regex filter"
-            TSK_FILTER="$regex" awk -F '\t' -v inv="$invert" '
+            TSK_FILTER="$regex" TSK_TASK_DIR="$tskdir" awk -F '\t' -v inv="$invert" -v bodies="${search_body:-0}" "$body_awk"'
                 BEGIN { re=tolower(ENVIRON["TSK_FILTER"]); valid=("" ~ re) }
-                FILENAME==ARGV[1] { text[$1]=tolower($1 " " $2 " " $3 " " $6); next }
+                FILENAME==ARGV[1] { text[$1]=tolower($1 " " $2 " " $3 " " $6 (bodies ? " " task_body($1) : "")); next }
                 { found=text[$1] ~ re; if ((!inv&&found)||(inv&&!found)) print $1 }
             ' "$snapshot" "$input" >"$output" || _die "invalid regex [$regex]"
             ;;
@@ -273,9 +347,9 @@ _filter() (
             if [ -n "$exact" ]; then
                 awk -v want="$exact" -v inv="$invert" '{ found=($1==want); if ((!inv&&found)||(inv&&!found)) print $1 }' "$input" >"$output"
             else
-                TSK_FILTER="$pattern" awk -F '\t' -v inv="$invert" '
+                TSK_FILTER="$pattern" TSK_TASK_DIR="$tskdir" awk -F '\t' -v inv="$invert" -v bodies="${search_body:-0}" "$body_awk"'
                     BEGIN { p=tolower(ENVIRON["TSK_FILTER"]) }
-                    FILENAME==ARGV[1] { text[$1]=tolower($1 " " $2 " " $3 " " $6); next }
+                    FILENAME==ARGV[1] { text[$1]=tolower($1 " " $2 " " $3 " " $6 (bodies ? " " task_body($1) : "")); next }
                     { found=index(text[$1],p)>0; if ((!inv&&found)||(inv&&!found)) print $1 }
                 ' "$snapshot" "$input" >"$output"
             fi
@@ -328,24 +402,33 @@ _render() (
 # or replace-prefix. replace-prefix removes KEY:* and appends TAG.
 _tag_update() (
     file=$1 action=$2 tag=$3 key=${4:-}
+    today=''
+    case "$action:$tag" in add:done) today=$(_today) || return 1 ;; esac
     [ -f "$file" ] && [ -r "$file" ] && [ -w "$file" ] && [ ! -L "$file" ] || _die "cannot update [$file]"
     tmp=$(mktemp "$tskdir/.tsk.edit.XXXXXX") || _die "cannot create task update"
     trap 'rm -f "$tmp"' 0
     trap 'exit 1' 1 2 3 15
     {
-        awk -v action="$action" -v want="$tag" -v key="$key" "$header_awk"'
+        awk -v action="$action" -v want="$tag" -v key="$key" -v today="$today" "$header_awk"'
+            function workflow(t) { return t=="inbox" || t=="next" || t=="backlog" || t=="wait" || index(t,"wait:")==1 }
             NR==1 {
                 parse_header($0)
-                n=0; seen=0
+                n=0; seen=0; was_done=0; active=0
+                for(i=1;i<=header_count;i++)if(header_tags[i]=="done")was_done=1
                 for (i=1;i<=header_count;i++) {
                     t=header_tags[i]
                     keep=1
+                    if(action=="add" && workflow(want) && ((workflow(t)&&t!=want) || t=="done" || index(t,"completed:")==1))keep=0
+                    if(action=="add" && want=="done" && (workflow(t) || (!was_done && index(t,"completed:")==1)))keep=0
+                    if(action=="remove" && want=="done" && index(t,"completed:")==1)keep=0
                     if (action=="remove" && t==want) keep=0
                     if (action=="replace-prefix" && (t==key || index(t,key ":")==1)) keep=0
-                    if (keep) { tags[++n]=t; if (t==want) seen=1 }
+                    if (keep) { tags[++n]=t; if (t==want) seen=1; if(workflow(t))active=1 }
                 }
                 if (action=="add" && !seen) tags[++n]=want
                 if (action=="replace-prefix" && want!="") tags[++n]=want
+                if(action=="add" && want=="done" && !was_done)tags[++n]="completed:" today
+                if(action=="remove" && want=="done" && was_done && !active)tags[++n]="inbox"
                 printf "%s",header_title
                 for (i=1;i<=n;i++) printf " +%s",tags[i]
                 print ""
@@ -401,29 +484,237 @@ _review() (
             else if(due[id]==today) td[++dn]=id
             else if(due[id]==tomorrow) tm[++mn]=id
             else if(due[id]>tomorrow&&due[id]<=week) wk[++wn]=id
+            else if(has(tags[id],"wait") || index("," tags[id],",wait:")>0) wait[++qn]=id
             else if(has(tags[id],"next")) nx[++nn]=id
+            else if(has(tags[id],"inbox")) inbox[++bn]=id
         }
         END {
-            if(!on&&!dn&&!mn&&!wn&&!nn){ if(open)printf "Nothing urgent. %d open task%s.\n",open,open==1?"":"s"; else print "Nothing to do."; exit }
+            if(!on&&!dn&&!mn&&!wn&&!nn&&!qn&&!bn){ if(open)printf "Nothing urgent. %d open task%s.\n",open,open==1?"":"s"; else print "Nothing to do."; exit }
             sortdue(overdue,on); sortdue(wk,wn)
             if(on){print "OVERDUE";for(i=1;i<=on;i++)print line(overdue[i],1,"!")}
             if(dn){if(on)print "";print "TODAY";for(i=1;i<=dn;i++)print line(td[i],1,"=")}
             if(mn){if(on||dn)print "";print "TOMORROW";for(i=1;i<=mn;i++)print line(tm[i],1,">")}
             if(wn){if(on||dn||mn)print "";print "IN A WEEK";for(i=1;i<=wn;i++)print line(wk[i],1,"-")}
             if(nn){if(on||dn||mn||wn)print "";print "NEXT";for(i=1;i<=nn;i++)print line(nx[i],0,"")}
+            if(qn){if(on||dn||mn||wn||nn)print "";print "WAITING";for(i=1;i<=qn;i++)print line(wait[i],0,"")}
+            if(bn){if(on||dn||mn||wn||nn||qn)print "";print "INBOX";for(i=1;i<=bn;i++)print line(inbox[i],0,"")}
         }
     ' "$selected" "$snapshot"
 )
 
+_constrain_selection() (
+    awk -F '\t' -v mode="$mode" -v view="${view:-}" -v since="$since" -v until="$until" '
+        FILENAME==ARGV[1] { done[$1]=$4; tags[$1]=$6; completed[$1]=$7; next }
+        function has(id,tag) { return index("," tags[id] ",", "," tag ",")>0 }
+        {
+            id=$1; wait=has(id,"wait") || index("," tags[id],",wait:")>0
+            if(mode=="open" && done[id])next
+            if(mode=="done" && !done[id])next
+            if(since!="" && (completed[id]=="" || completed[id]<since))next
+            if(until!="" && (completed[id]=="" || completed[id]>until))next
+            if(view=="inbox" && !has(id,"inbox"))next
+            if(view=="next" && (!has(id,"next") || wait))next
+            if(view=="waiting" && !wait)next
+            if(view=="backlog" && (has(id,"inbox") || has(id,"next") || wait))next
+            if(view=="unassigned" && index("," tags[id],",owner:")>0)next
+            print id
+        }
+    ' "$snapshot" "$selected" >"$1"
+)
+
+_order_selection() (
+    output=$1
+    rows=$(_tmp order) || return 1
+    sorted=''
+    trap 'rm -f "$rows" "$sorted"' 0
+    trap 'exit 1' 1 2 3 15
+    sorted=$(_tmp order) || return 1
+    awk -F '\t' -v order="$sort_by" '
+        FILENAME==ARGV[1] {
+            key=$1
+            if(order=="title")key=tolower($3)
+            if(order=="due")key=($5=="" ? "1" : "0" $5)
+            if(order=="completed")key=($7=="" ? "1" : "0" $7)
+            keys[$1]=key; next
+        }
+        { print keys[$1] "\t" $1 }
+    ' "$snapshot" "$selected" >"$rows" || return 1
+    LC_ALL=C sort "$rows" >"$sorted" || return 1
+    cut -f2- "$sorted" >"$output"
+)
+
+_json_selection() (
+    TSK_TASK_DIR="$tskdir" awk -F '\t' "$body_awk"'
+        function quote(s, out,i,c) {
+            out="\""
+            for(i=1;i<=length(s);i++) {
+                c=substr(s,i,1)
+                if(c=="\\")out=out "\\\\"
+                else if(c=="\"")out=out "\\\""
+                else if(c in controls)out=out controls[c]
+                else out=out c
+            }
+            return out "\""
+        }
+        FILENAME==ARGV[1] { sid[$1]=$2; title[$1]=$3; done[$1]=$4; due[$1]=$5; tags[$1]=$6; completed[$1]=$7; next }
+        {
+            id=$1; printf "%s{\"id\":%s,\"short_id\":%s,\"title\":%s,\"tags\":[",sep,quote(id),quote(sid[id]),quote(title[id])
+            n=split(tags[id],a,","); tagsep=""
+            for(i=1;i<=n;i++)if(a[i]!="") { printf "%s%s",tagsep,quote(a[i]); tagsep="," }
+            printf "],\"done\":%s,\"due\":%s,\"completed\":%s,\"body\":%s}",done[id]?"true":"false",due[id]==""?"null":quote(due[id]),completed[id]==""?"null":quote(completed[id]),quote(task_body(id))
+            sep=",\n"
+        }
+        BEGIN { for(i=0;i<32;i++)controls[sprintf("%c",i)]=sprintf("\\u%04x",i); print "["; sep="" }
+        END { print "\n]" }
+    ' "$snapshot" "$selected"
+)
+
+_grouped_selection() (
+    rows=$(_tmp groups) || return 1
+    sorted=''
+    trap 'rm -f "$rows" "$sorted"' 0
+    trap 'exit 1' 1 2 3 15
+    sorted=$(_tmp groups) || return 1
+    awk -F '\t' -v key="$group_by" '
+        FILENAME==ARGV[1] {
+            text[$1]="[" $2 "] " $3; tags[$1]=$6
+            n=split($6,a,","); for(i=1;i<=n;i++)if(a[i]!="")text[$1]=text[$1] " +" a[i]
+            next
+        }
+        {
+            id=$1; n=split(tags[id],a,","); found=0
+            for(i=1;i<=n;i++)if(index(a[i],key ":")==1) {
+                value=substr(a[i],length(key)+2)
+                if(!seen[id,value]++)print value "\t" FNR "\t" text[id]
+                found=1
+            }
+            if(!found)print "(unassigned)\t" FNR "\t" text[id]
+        }
+    ' "$snapshot" "$selected" >"$rows" || return 1
+    tab=$(printf '\t')
+    LC_ALL=C sort -t "$tab" -k1,1 -k2,2n "$rows" >"$sorted" || return 1
+    awk -F '\t' -v key="$group_by" '
+        { group[NR]=$1; text[NR]=$3; counts[$1]++ }
+        END {
+            for(i=1;i<=NR;i++) {
+                if(i==1 || group[i]!=group[i-1]) {
+                    if(i>1)print ""
+                    printf "%s: %s (%d)\n",toupper(key),group[i],counts[group[i]]
+                }
+                print "  " text[i]
+            }
+        }
+    ' "$sorted"
+)
+
 list_tasks() (
-    _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
-    mode=open
-    while [ "$#" -gt 0 ]; do
-        case "$1" in --all) mode=all; shift ;; --done) mode='done'; shift ;; --) shift; break ;; *) break ;; esac
-    done
+    mode=open sort_by=id group_by='' format=text search_body=0 since='' until=''
+    if [ "${view:-}" = report ]; then
+        mode='done'; sort_by=completed
+        since=$(_normalize_date '6 days ago') || return 1
+        until=$(_today) || return 1
+    fi
     _prepare_selection
+    filters='' constrained=''
+    trap 'rm -f "$snapshot" "$selected" "$filters" "$constrained"' 0
+    filters=$(_tmp filters) || return 1
+    constrained=$(_tmp selected) || return 1
+    options=1
+    while [ "$#" -gt 0 ]; do
+        if [ "$options" -eq 1 ]; then
+            case "$1" in
+                --) options=0; shift; continue ;;
+                --all) mode=all; shift; continue ;;
+                --done) mode='done'; shift; continue ;;
+                --body) search_body=1; shift; continue ;;
+                --ids|--json)
+                    requested=${1#--}; [ "$format" = text ] || [ "$format" = "$requested" ] || _die "choose either --ids or --json"
+                    format=$requested; shift; continue ;;
+                --group-by|--sort|--since|--until|--has|--without)
+                    option=$1; [ "$#" -ge 2 ] || _die "$option requires a value"
+                    value=$2; shift 2
+                    case "$option" in
+                        --group-by) group_by=$value; _valid_key "$value" || _die "invalid group key [$value]" ;;
+                        --sort) sort_by=$value ;;
+                        --since) since=$(_normalize_date "$value") || _die "invalid completion date [$value]" ;;
+                        --until) until=$(_normalize_date "$value") || _die "invalid completion date [$value]" ;;
+                        --has|--without)
+                            _valid_key "$value" || _die "invalid tag key [$value]"
+                            prefix=''; [ "$option" != --without ] || prefix=-
+                            printf '%s+%s:\n' "$prefix" "$value" >>"$filters" || return 1
+                            ;;
+                    esac
+                    continue ;;
+                --all-time) since=''; until=''; shift; continue ;;
+                --*) _die "unknown list option [$1]" ;;
+            esac
+        fi
+        printf '%s\n' "$1" >>"$filters" || return 1
+        shift
+    done
+    case "$sort_by" in id|title|due|completed) ;; *) _die "invalid sort field [$sort_by]" ;; esac
+    [ "$format" = text ] || [ -z "$group_by" ] || _die "--group-by requires text output"
+    awk -v since="$since" -v until="$until" 'BEGIN { exit(since!="" && until!="" && since>until) }' || _die "completion date range is reversed"
+    [ "${view:-}" != report ] || mode='done'
+    set --
+    while IFS= read -r filter; do set -- "$@" "$filter"; done <"$filters"
     _select "$snapshot" "$selected" "$@" || return 1
-    _render "$snapshot" "$selected" "$mode"
+    _constrain_selection "$constrained" || return 1
+    mv "$constrained" "$selected" || return 1
+    _order_selection "$constrained" || return 1
+    mv "$constrained" "$selected" || return 1
+    case "$format" in
+        ids) cat "$selected" ;;
+        json) _json_selection ;;
+        text) if [ -n "$group_by" ]; then _grouped_selection; else _render "$snapshot" "$selected"; fi ;;
+    esac
+)
+
+list_tags() (
+    mode=open names=0 namespace=''
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --all) mode=all ;;
+            --done) mode='done' ;;
+            --names) names=1 ;;
+            --) shift; break ;;
+            -*) _die "unknown tags option [$1]" ;;
+            *) break ;;
+        esac
+        shift
+    done
+    [ "$#" -le 1 ] || _die "usage: $scriptname tags [--all|--done] [--names] [key]"
+    if [ "$#" -eq 1 ]; then
+        namespace=$1
+        printf '%s\n' "$namespace" | grep -Eq '^[A-Za-z0-9_-]+$' || _die "invalid tag namespace [$namespace]"
+    fi
+    _prepare_selection
+    _select "$snapshot" "$selected" || return 1
+    catalogue=''
+    trap 'rm -f "$snapshot" "$selected" "$catalogue"' 0
+    catalogue=$(_tmp tags) || return 1
+    awk -F '\t' -v mode="$mode" -v names="$names" -v tag_key="$namespace" '
+        FILENAME==ARGV[1] { tags[$1]=$6; done[$1]=$4; next }
+        {
+            id=$1
+            if(mode=="open" && done[id])next
+            if(mode=="done" && !done[id])next
+            n=split(tags[id],a,",")
+            for(i=1;i<=n;i++) {
+                tag=a[i]
+                if(tag=="" || (tag_key!="" && index(tag,tag_key ":")!=1))continue
+                if(!seen[id,tag]++)counts[tag]++
+            }
+        }
+        END {
+            for(tag in counts) {
+                printf "+%s",tag
+                if(!names)printf "\t%d",counts[tag]
+                print ""
+            }
+        }
+    ' "$snapshot" "$selected" >"$catalogue" || return 1
+    LC_ALL=C sort "$catalogue"
 )
 
 daily_view() (
@@ -475,6 +766,29 @@ add_task() (
             case "$tag" in due:*) ;; *) clean="$clean${clean:+ }$tag" ;; esac
         done
         tags="$clean${clean:+ }due:$norm"
+    fi
+
+    state='' completed=''
+    for tag in $tags; do
+        case "$tag" in
+            inbox|next|backlog|wait|wait:*|done)
+                [ -z "$state" ] || _die "choose one workflow state: inbox, next, backlog, wait, or done"
+                state=$tag ;;
+            completed:*)
+                [ -z "$completed" ] || _die "a task can have only one completion date"
+                completed=$(_normalize_date "${tag#completed:}") || _die "invalid completion date"
+                ;;
+        esac
+    done
+    if [ -z "$state" ]; then tags="$tags${tags:+ }inbox"; fi
+    if [ "$state" = 'done' ] && [ -z "$completed" ]; then
+        completed=$(_today) || return 1
+        tags="$tags${tags:+ }completed:$completed"
+    fi
+    if [ -n "$completed" ]; then
+        clean=''
+        for tag in $tags; do case "$tag" in completed:*) ;; *) clean="$clean${clean:+ }$tag" ;; esac; done
+        tags="$clean${clean:+ }completed:$completed"
     fi
 
     id=$(_create_id) || _die "cannot create task id"
@@ -542,10 +856,16 @@ _select_change() {
     _require_tasks "$selected"
 }
 
+_preview() {
+    _info "DRY RUN: $1; $(_count "$selected") task(s), no files changed"
+    _render "$snapshot" "$selected"
+}
+
 done_tasks() (
     _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
     _prepare_selection
     _select_change "$snapshot" "$selected" "$@" || return 1
+    if [ "${dry_run:-0}" -eq 1 ]; then _preview 'complete'; return $?; fi
     while IFS= read -r id; do _tag_update "$(_task_path "$id")" add 'done' || return 1; done <"$selected"
     _info 'done'
 )
@@ -554,6 +874,7 @@ open_tasks() (
     _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
     _prepare_selection
     _select_change "$snapshot" "$selected" "$@" || return 1
+    if [ "${dry_run:-0}" -eq 1 ]; then _preview 'reopen'; return $?; fi
     while IFS= read -r id; do _tag_update "$(_task_path "$id")" remove 'done' || return 1; done <"$selected"
     _info open
 )
@@ -565,23 +886,39 @@ due_tasks() (
     _prepare_selection
     _select_change "$snapshot" "$selected" "$@" || return 1
     if [ "$value" = - ]; then
+        if [ "${dry_run:-0}" -eq 1 ]; then _preview 'remove deadline'; return $?; fi
         while IFS= read -r id; do _tag_update "$(_task_path "$id")" replace-prefix '' due || return 1; done <"$selected"
         _info "due date removed"; return
     fi
     norm=$(_normalize_date "$value") || _die "invalid date [$value]"
+    if [ "${dry_run:-0}" -eq 1 ]; then _preview "deadline $norm"; return $?; fi
     while IFS= read -r id; do _tag_update "$(_task_path "$id")" replace-prefix "due:$norm" due || return 1; done <"$selected"
     _info "due $norm"
 )
 
 tag_tasks() (
     [ "$#" -gt 0 ] || _die "specify tag changes"
-    _stdin_available || _die "tag changes require tasks on stdin"
+    target=''
+    case "$1" in
+        +*|-+*) _stdin_available || _die "specify a task ID or pipe a task selection" ;;
+        *) [ -n "$1" ] || _die "empty task ID"; target=$1; shift; [ "$#" -gt 0 ] || _die "specify tag changes after the task ID" ;;
+    esac
     _no_tasks && { _warn "no tasks in [$tskdir]"; return 1; }
     _prepare_selection
     changes=''
     trap 'rm -f "$snapshot" "$selected" "$changes"' 0
     changes=$(_tmp changes) || return 1
-    _ids_from_stdin "$snapshot" >"$selected" || return 1
+    if [ -n "$target" ]; then
+        # An explicit ID takes precedence over stdin and never falls back to
+        # substring/title matching, unlike a normal text filter.
+        TSK_TASK_ID="$target" awk -F '\t' '
+            BEGIN { target=ENVIRON["TSK_TASK_ID"] }
+            $1==target || $2==target { print $1 }
+        ' "$snapshot" >"$selected" || return 1
+        [ "$(_count "$selected")" -eq 1 ] || _die "no unique task with ID [$target]"
+    else
+        _ids_from_stdin "$snapshot" >"$selected" || return 1
+    fi
     _require_tasks "$selected"
 
     # Validate the entire request before modifying any task.
@@ -589,15 +926,16 @@ tag_tasks() (
         case "$change" in +*) op=add; tag=${change#+} ;; -+*) op=remove; tag=${change#-+} ;; *) _die "invalid tag change [$change]; use +tag or -+tag" ;; esac
         _valid_tag "$tag" || _die "invalid tag [$tag]"
         case "$op:$tag" in
-            add:due:*)
-                value=${tag#due:}; norm=$(_normalize_date "$value") || _die "invalid due date [$value]"
-                printf 'replace-prefix\t%s\tdue\n' "due:$norm" >>"$changes" || return 1
+            add:due:*|add:completed:*)
+                key=${tag%%:*}; value=${tag#*:}; norm=$(_normalize_date "$value") || _die "invalid $key date [$value]"
+                printf 'replace-prefix\t%s\t%s\n' "$key:$norm" "$key" >>"$changes" || return 1
                 ;;
             *)
                 printf '%s\t%s\t\n' "$op" "$tag" >>"$changes" || return 1
                 ;;
         esac
     done
+    if [ "${dry_run:-0}" -eq 1 ]; then _preview "tags $*"; return $?; fi
     tab=$(printf '\t')
     while IFS="$tab" read -r op tag key; do
         while IFS= read -r id; do
@@ -612,6 +950,7 @@ del_tasks() (
     piped=0; _stdin_available && piped=1
     _prepare_selection
     _select_change "$snapshot" "$selected" "$@" || return 1
+    if [ "${dry_run:-0}" -eq 1 ]; then _preview 'delete'; return $?; fi
     _render "$snapshot" "$selected" || return 1
     if [ "$piped" -eq 0 ] && [ -t 0 ]; then
         printf 'delete %s task(s) (y/n)? ' "$(_count "$selected")"
@@ -649,7 +988,7 @@ check_tasks() (
             if(header_title=="")issue("empty title")
             for(i=1;i<=header_invalid_count;i++)issue("invalid tag " header_invalid[i])
             for(tag in seen)delete seen[tag]
-            dues=0
+            dues=0; completions=0
             for(i=1;i<=header_count;i++) {
                 tag=header_tags[i]
                 if(seen[tag]++==1)issue("duplicate tag +" tag)
@@ -657,8 +996,13 @@ check_tasks() (
                     dues++
                     if(!valid_date(substr(tag,5)))issue("invalid due date " substr(tag,5))
                 }
+                if(substr(tag,1,10)=="completed:") {
+                    completions++
+                    if(!valid_date(substr(tag,11)))issue("invalid completion date " substr(tag,11))
+                }
             }
             if(dues>1)issue("multiple due dates")
+            if(completions>1)issue("multiple completion dates")
         }
         /^(<<<<<<<+|>>>>>>>+|\|\|\|\|\|\|\|+)([[:space:]]|$)/ {
             if(!conflicts[FILENAME]++)issue("unresolved merge conflict")
@@ -674,14 +1018,22 @@ check_tasks() (
 main() {
     [ "$#" -gt 0 ] || { daily_view; return; }
     cmd=$1; shift
+    [ "$cmd" != g ] || cmd=git
+    dry_run=0
+    case "$cmd" in
+        done|open|due|t|d) if [ "${1:-}" = --dry-run ]; then dry_run=1; shift; fi ;;
+    esac
     case "$cmd" in
         a) _ensure_dir; _write_lock ;;
         e|done|open|due|t|d) _write_lock ;;
     esac
     case "$cmd" in
         r) review_tasks "$@" ;; a) add_task "$@" ;; l) list_tasks "$@" ;; s) show_tasks "$@" ;;
+        projects) list_tasks --group-by project "$@" ;; team) list_tasks --group-by owner "$@" ;;
+        inbox|next|backlog|waiting|unassigned|report) view=$cmd; list_tasks "$@" ;;
+        browse) "$scriptname-issue" open "$@" ;; import) "$scriptname-issue" import "$@" ;;
         e) edit_task "$@" ;; done) done_tasks "$@" ;; open) open_tasks "$@" ;; due) due_tasks "$@" ;;
-        t) tag_tasks "$@" ;; d) del_tasks "$@" ;;
+        t) tag_tasks "$@" ;; tags) list_tags "$@" ;; d) del_tasks "$@" ;;
         dir) [ "$#" -eq 0 ] || _die "usage: $scriptname dir"; printf '%s\n' "$tskdir" ;;
         h|help|-h|--help) helpmsg ;; check) check_tasks "$@" ;;
         *)

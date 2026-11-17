@@ -7,11 +7,11 @@ environment:
   GIT_SSH_COMMAND: ssh -o StrictHostKeyChecking=no
 tasks:
   - setup: |
-      sudo apk add --no-cache coreutils flock python3 git shellcheck
+      sudo apk add --no-cache coreutils flock python3 git bash shellcheck
       # This is for not having to cd into your <repo> for each task
       echo 'cd tsk' >> ~/.buildenv
   - test: |
-      shellcheck --severity=warning tsk tsk-fzf tsk-git tsk-y tests/test.sh
+      shellcheck --severity=warning tsk tsk-fzf tsk-git tsk-y tests/test.sh completions/tsk.bash
       ./tests/test.sh
   - check: |
       if [ "$(git rev-parse origin/master)" != "$(git rev-parse HEAD)" ]; then \

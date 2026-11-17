@@ -1,0 +1,407 @@
+#!/usr/bin/env python3
+"""Optional issue links, browser integration and JSON import for tsk."""
+
+import argparse
+from contextlib import contextmanager
+import datetime as dt
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import shlex
+import string
+import subprocess
+import sys
+import tempfile
+import unicodedata
+from urllib.parse import urlsplit
+
+
+TAG = re.compile(r"[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?\Z")
+KEY = re.compile(r"[A-Za-z0-9_-]+\Z")
+ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+LINK = re.compile(r"^Issue: \[([A-Za-z0-9_-]+)\]\(<(https?://[^<>\s]+)>\)$", re.M)
+CONFLICT = re.compile(r"^(?:<{7,}|>{7,}|\|{7,})(?:\s|$)", re.M)
+STATES = {"inbox", "next", "backlog", "wait", "done"}
+
+
+def core(*args):
+    result = subprocess.run(["tsk", *args], stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or "tsk command failed")
+    return result.stdout
+
+
+def archive():
+    return json.loads(core("l", "--all", "--json"))
+
+
+def task_directory():
+    return Path(core("dir").strip()).absolute()
+
+
+@contextmanager
+def locked(directory):
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def validate_key(value, label="tag value"):
+    if not isinstance(value, str) or not KEY.fullmatch(value):
+        raise ValueError(f"invalid {label}: {value!r}")
+    return value
+
+
+def validate_url(value):
+    if not isinstance(value, str) or re.search(r"[\s<>]", value):
+        raise ValueError("issue URL must be an HTTP(S) URL without whitespace")
+    parsed = urlsplit(value)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("issue URL must use HTTP or HTTPS and include a host")
+    return parsed.geturl()
+
+
+def calendar_date(value):
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError("dates must be ISO date strings")
+    date = value[:10]
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        raise ValueError(f"invalid date: {value!r}")
+    dt.date.fromisoformat(date)
+    return date
+
+
+def label(value):
+    """Keep provider names readable in ASCII tags; the original notes survive."""
+    value = unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode()
+    value = re.sub(r"[^A-Za-z0-9_-]+", "_", value).strip("_")
+    return value or None
+
+
+def exact_task(tasks, target):
+    matches = [task for task in tasks if target in (task["id"], task["short_id"])]
+    if len(matches) != 1:
+        raise ValueError(f"no unique task with ID [{target}]")
+    return matches[0]
+
+
+def linked_url(task):
+    match = LINK.search(task["body"])
+    return validate_url(match[2]) if match else None
+
+
+def attach(body, key, url):
+    line = f"Issue: [{key}](<{validate_url(url)}>)"
+    if LINK.search(body):
+        return LINK.sub(lambda _: line, body, count=1)
+    if not body:
+        return "\n" + line + "\n"
+    return body + ("" if body.endswith("\n\n") else "\n" if body.endswith("\n") else "\n\n") + line + "\n"
+
+
+def contents(task):
+    return task["title"] + "".join(" +" + tag for tag in task["tags"]) + "\n" + task["body"]
+
+
+def atomic_write(directory, task_id, text, original=None):
+    if not ID.fullmatch(task_id):
+        raise ValueError("invalid task ID")
+    destination = directory / (task_id + ".tsk.md")
+    if original and (destination.is_symlink() or not os.access(destination, os.W_OK)):
+        raise ValueError(f"cannot update [{task_id}]")
+    if not original and os.path.lexists(destination):
+        raise ValueError(f"task path already exists: {destination.name}")
+    fd, temporary = tempfile.mkstemp(prefix=".tsk.issue.", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if original:
+            subprocess.run(
+                ["cp", "--attributes-only", "--preserve=mode,ownership", "--", str(destination), temporary],
+                check=True, stdout=subprocess.DEVNULL,
+            )
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def set_link(args):
+    key = validate_key(args.key, "issue key")
+    url = validate_url(args.url)
+    directory = task_directory()
+    with locked(directory):
+        task = exact_task(archive(), args.id)
+        if args.dry_run:
+            print(f"DRY RUN: link {task['id']} to {key} {url}")
+            return
+        task["tags"] = [tag for tag in task["tags"] if not tag.startswith("issue:")] + ["issue:" + key]
+        task["body"] = attach(task["body"], key, url)
+        atomic_write(directory, task["id"], contents(task), original=True)
+        print(task["id"])
+
+
+def open_link(args):
+    task = exact_task(archive(), args.id)
+    url = linked_url(task)
+    if not url:
+        raise ValueError("task has no issue link; use 'tsk issue set ID KEY URL'")
+    if args.print_url:
+        print(url)
+        return
+    command = shlex.split(os.environ.get("BROWSER", "xdg-open"))
+    if not command:
+        raise ValueError("BROWSER is empty")
+    result = subprocess.run([*command, url])
+    if result.returncode:
+        raise ValueError(f"browser exited with status {result.returncode}")
+
+
+def rich_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        if value.get("type") == "hardBreak":
+            return "\n"
+        text = value.get("text", "") + "".join(rich_text(node) for node in value.get("content", []))
+        return text + ("\n" if value.get("type") in ("paragraph", "heading", "listItem") else "")
+    raise ValueError("issue description must be text or an Atlassian document")
+
+
+def provider_record(item, source, args):
+    if source == "jira":
+        fields = item.get("fields", {})
+        key = str(item.get("key", ""))
+        project = fields.get("project") or {}
+        owner = fields.get("assignee") or {}
+        base = args.base_url
+        if not base and "/rest/api/" in item.get("self", ""):
+            base = item["self"].split("/rest/api/", 1)[0]
+        return {
+            "key": key, "url": item.get("url") or (base.rstrip("/") + "/browse/" + key if base else None),
+            "title": fields.get("summary"), "body": rich_text(fields.get("description")),
+            "project": project.get("key") or project.get("name"),
+            "owner": owner.get("name") or owner.get("displayName") or owner.get("accountId"),
+            "done": (fields.get("status") or {}).get("statusCategory", {}).get("key") == "done",
+            "completed": fields.get("resolutiondate"), "due": fields.get("duedate"),
+        }
+    if source == "gitlab":
+        owners = item.get("assignees") or ([item["assignee"]] if item.get("assignee") else [])
+        owner = owners[0] if owners else {}
+        return {
+            "key": str(item.get("iid", item.get("id", ""))), "url": item.get("web_url"),
+            "title": item.get("title"), "body": item.get("description") or "",
+            "project": item.get("references", {}).get("full", "").split("#")[0] or item.get("project_id"),
+            "owner": owner.get("username") or owner.get("name"),
+            "done": item.get("state") == "closed", "completed": item.get("closed_at"), "due": item.get("due_date"),
+        }
+    if source == "redmine":
+        project = item.get("project") or {}
+        owner = item.get("assigned_to") or {}
+        status = item.get("status") or {}
+        key = str(item.get("id", ""))
+        return {
+            "key": key, "url": item.get("url") or (args.base_url.rstrip("/") + "/issues/" + key if args.base_url else None),
+            "title": item.get("subject"), "body": item.get("description") or "",
+            "project": project.get("identifier") or project.get("name") or project.get("id"),
+            "owner": owner.get("name") or owner.get("id"),
+            "done": bool(item.get("closed_on")) or status.get("is_closed") is True or str(status.get("id")) in args.closed_status,
+            "completed": item.get("closed_on"), "due": item.get("due_date"),
+        }
+    return dict(item)
+
+
+def normalized(item, source, args):
+    if not isinstance(item, dict):
+        raise ValueError("each imported item must be an object")
+    if source == "auto":
+        if "short_id" in item:
+            source = "tsk"
+        elif "fields" in item:
+            source = "jira"
+        elif "web_url" in item and "title" in item:
+            source = "gitlab"
+        elif "subject" in item:
+            source = "redmine"
+        else:
+            source = "generic"
+    try:
+        record = provider_record(item, source, args)
+    except (AttributeError, TypeError, KeyError) as error:
+        raise ValueError("invalid provider issue structure") from error
+    title = record.get("title")
+    if not isinstance(title, str) or not title.strip() or "\n" in title or "\r" in title or CONFLICT.search(title):
+        raise ValueError("every imported task needs a nonempty one-line title")
+    title = " ".join(title.split())
+    if any(word.startswith("+") for word in title.split()):
+        raise ValueError("put tags in the tags array rather than in the imported title")
+    tags = record.get("tags", [])
+    if not isinstance(tags, list) or any(not isinstance(tag, str) or not TAG.fullmatch(tag) for tag in tags):
+        raise ValueError("tags must be an array of valid tag names without '+'")
+    tags = list(dict.fromkeys(tags))
+    body = record.get("body", "")
+    if not isinstance(body, str) or "\0" in body or CONFLICT.search(body):
+        raise ValueError("invalid body or unresolved conflict markers")
+    if source != "tsk" and body and not body.startswith("\n"):
+        body = "\n" + body
+    key, url = record.get("key"), record.get("url")
+    if source in ("jira", "gitlab", "redmine") and not url:
+        raise ValueError("provider issue has no browser URL; supply --base-url")
+    if bool(key) != bool(url):
+        raise ValueError("issue key and URL must be supplied together")
+    if key:
+        key = validate_key(str(key), "issue key")
+        tags = [tag for tag in tags if not tag.startswith("issue:")] + ["issue:" + key]
+        body = attach(body, key, validate_url(url))
+    for tag_key in ("project", "owner"):
+        value = getattr(args, tag_key) or record.get(tag_key)
+        if value is not None:
+            value = validate_key(value, tag_key) if source in ("tsk", "generic") or getattr(args, tag_key) else label(value)
+            if value:
+                tags = [tag for tag in tags if not tag.startswith(tag_key + ":")] + [tag_key + ":" + value]
+    for tag in args.tag:
+        tag = tag[1:] if tag.startswith("+") else tag
+        if not TAG.fullmatch(tag):
+            raise ValueError(f"invalid extra tag: {tag!r}")
+        if tag not in tags:
+            tags.append(tag)
+    if source not in ("tsk", "generic"):
+        tags.append("source:" + source)
+    for date_key in ("due", "completed"):
+        dates = [tag.split(":", 1)[1] for tag in tags if tag.startswith(date_key + ":")]
+        if len(dates) > 1:
+            raise ValueError(f"multiple {date_key} dates")
+        value = calendar_date(record.get(date_key) or (dates[0] if dates else None))
+        if source != "tsk":
+            tags = [tag for tag in tags if not tag.startswith(date_key + ":")]
+            if value:
+                tags.append(date_key + ":" + value)
+    done = record.get("done", "done" in tags)
+    if not isinstance(done, bool):
+        raise ValueError("done must be a JSON boolean")
+    if source == "tsk" and done != ("done" in tags):
+        raise ValueError("done must agree with the tags array")
+    if done and source != "tsk":
+        tags = [tag for tag in tags if tag not in STATES and not tag.startswith("wait:")] + ["done"]
+    elif source != "tsk" and not any(tag in STATES or tag.startswith("wait:") for tag in tags):
+        tags.append("inbox")
+    task_id = record.get("id") if source == "tsk" else None
+    if task_id is not None and (not isinstance(task_id, str) or not ID.fullmatch(task_id)):
+        raise ValueError("invalid imported task ID")
+    result = {"id": task_id, "title": title, "tags": tags, "body": body}
+    contents(result).encode("utf-8")
+    return result
+
+
+def import_tasks(args):
+    if args.base_url:
+        validate_url(args.base_url)
+    for name in ("project", "owner"):
+        if getattr(args, name):
+            validate_key(getattr(args, name), name)
+    with (sys.stdin if args.file == "-" else open(args.file, encoding="utf-8")) as handle:
+        payload = json.load(handle)
+    if isinstance(payload, dict):
+        payload = payload.get("issues", payload.get("tasks", [payload]))
+    if not isinstance(payload, list):
+        raise ValueError("import expects a JSON array or an object containing issues/tasks")
+    records = [normalized(item, args.source, args) for item in payload]
+    if args.only_project:
+        records = [record for record in records if "project:" + args.only_project in record["tags"]]
+    if args.only_open:
+        records = [record for record in records if "done" not in record["tags"]]
+    directory = task_directory()
+    if args.dry_run and not directory.exists():
+        plan_import(records, [], args, directory)
+        return
+    directory.mkdir(parents=True, exist_ok=True)
+    with locked(directory):
+        plan_import(records, archive(), args, directory)
+
+
+def plan_import(records, existing, args, directory):
+    ids = {task["id"] for task in existing}
+    urls = {linked_url(task) for task in existing} - {None}
+    texts = {contents(task) for task in existing}
+    planned, skipped = [], 0
+    for record in records:
+        text = contents(record)
+        url = linked_url(record)
+        if record["id"] in ids or (url and url in urls) or text in texts:
+            skipped += 1
+            continue
+        planned.append(record)
+        if record["id"]:
+            ids.add(record["id"])
+        if url:
+            urls.add(url)
+        texts.add(text)
+    for task in planned:
+        if task["id"] and os.path.lexists(directory / (task["id"] + ".tsk.md")):
+            raise ValueError(f"task path already exists: {task['id']}")
+    for task in planned:
+        if args.dry_run:
+            print("CREATE " + (task["id"] or task["title"]))
+            continue
+        task_id = task["id"]
+        if task_id and (directory / (task_id + ".tsk.md")).exists():
+            raise ValueError(f"task ID already exists: {task_id}")
+        if not task_id:
+            while True:
+                suffix = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(4))
+                if not any(value.endswith("-" + suffix) for value in ids):
+                    task_id = dt.datetime.now().strftime("%Y%m%d%H%M%S%f")[:-3] + "-" + suffix
+                    ids.add(task_id)
+                    break
+        atomic_write(directory, task_id, contents(task))
+        print(task_id)
+    verb = "would import" if args.dry_run else "imported"
+    print(f"tsk-issue: {verb} {len(planned)} task(s); skipped {skipped} existing item(s)", file=sys.stderr)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    link = commands.add_parser("set", help="associate one task with an issue")
+    link.add_argument("--dry-run", action="store_true")
+    link.add_argument("id")
+    link.add_argument("key")
+    link.add_argument("url")
+    link.set_defaults(run=set_link)
+    browser = commands.add_parser("open", help="open the associated issue")
+    browser.add_argument("--print", dest="print_url", action="store_true")
+    browser.add_argument("id")
+    browser.set_defaults(run=open_link)
+    importer = commands.add_parser("import", help="import tsk or issue JSON")
+    importer.add_argument("file", help="JSON file, or '-' for stdin")
+    importer.add_argument("--source", choices=("auto", "tsk", "generic", "jira", "gitlab", "redmine"), default="auto")
+    importer.add_argument("--base-url")
+    importer.add_argument("--project")
+    importer.add_argument("--owner")
+    importer.add_argument("--tag", action="append", default=[])
+    importer.add_argument("--only-project")
+    importer.add_argument("--only-open", action="store_true")
+    importer.add_argument("--closed-status", action="append", default=[])
+    importer.add_argument("--dry-run", action="store_true")
+    importer.set_defaults(run=import_tasks)
+    args = parser.parse_args()
+    try:
+        args.run(args)
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        parser.exit(1, f"tsk-issue: error: {error}\n")
+
+
+if __name__ == "__main__":
+    main()

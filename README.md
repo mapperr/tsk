@@ -26,7 +26,8 @@ tsk e DNS                        # edit one
 tsk done DNS                     # finish it
 ```
 
-If you want more interface around that core, optional `tsk-*` executables extend it without making the core larger. This repository currently includes `tsk-fzf`, `tsk-git`, and `tsk-y`.
+Optional `tsk-*` executables extend the core. This repository includes `tsk-fzf`,
+`tsk-git`, `tsk-y`, and the Python 3 `tsk-issue` extension for issue links and imports.
 
 ## Why
 
@@ -34,15 +35,21 @@ Task managers have a tendency to become hobbies.
 
 `tsk` tries not to.
 
-It keeps only three built-in pieces of task metadata:
+Workflow and dates are stored as tags:
 
 ```text
 +done             completed
 +next             part of the current working set
++inbox            captured, not yet reviewed
++backlog          reviewed, deferred work
++wait[:PERSON]    waiting for someone or something
 +due:YYYY-MM-DD   deadline
++completed:YYYY-MM-DD  date of completion
 ```
 
-Every other `+tag` is just a tag. Projects, areas, clients, contexts, and whatever else you care about do not require new entities or configuration:
+Other `+tags` remain user-defined. Projects and owners use optional conventions
+such as `+project:ace` and `+owner:anna`; group views work with any tag namespace.
+Areas, clients, and contexts do not require new entities or configuration:
 
 ```text
 Review API mapping +work +issuesyncer +qilab +next
@@ -89,8 +96,26 @@ arguments are supported, for example `EDITOR='code --wait'`. When editing a pipe
 selection, the editor reads from the terminal if one is available.
 
 `tsk` targets Linux and requires GNU coreutils (including `date`, `cp`, and
-`mv`), a POSIX awk, and `flock` from util-linux. GNU `date` handles relative dates
+`mv`), an awk with regex record separators (such as GNU or BusyBox awk), and
+`flock` from util-linux. GNU `date` handles relative dates
 such as `tomorrow` and `next monday`.
+
+### Bash completion
+
+Optional completion for Bash 4 or newer is included. Enable it in the current
+shell, replacing the path with your checkout:
+
+```bash
+source /path/to/tsk/completions/tsk.bash
+```
+
+Add that line to `~/.bashrc` to enable it in new shells. No `bash-completion`
+package is required. Completion suggests commands, installed `tsk-*` extensions,
+existing tags, namespace keys, command options, and displayed task IDs. It follows
+the command's task status: for example, `tsk open` suggests completed tasks.
+
+Tags from completed tasks remain available for reuse. Both `+tag` and `-+tag`
+are supported, including values after `:` such as `+project:ace`.
 
 ## Task files
 
@@ -124,7 +149,8 @@ You can inspect the files with any normal Unix tool. `tsk` does not own the data
 
 Metadata updates replace each task file atomically and preserve its permissions
 and Markdown body. CLI writers, `tsk e`, and `tsk y` share a lock on the task
-directory. Changes made directly by other tools do not participate in this lock.
+directory, as do issue links and imports. Changes made directly by other tools do
+not participate in this lock.
 Metadata updates require writable regular files and reject symbolic links.
 
 ## Daily view
@@ -161,6 +187,8 @@ The sections are:
 - **TOMORROW** — due tomorrow;
 - **IN A WEEK** — due from the day after tomorrow through seven days from today;
 - **NEXT** — `+next` tasks that were not already shown in a deadline section.
+- **WAITING** — `+wait` or `+wait:PERSON` tasks not already shown above.
+- **INBOX** — unprocessed `+inbox` tasks not already shown above.
 
 Deadlines outside `TODAY` and `TOMORROW` include a compact relative indication such as `(3d)` or `(2d late)`.
 
@@ -181,7 +209,7 @@ tsk a Renew certificate +work +due:tomorrow
 The file stores an absolute date:
 
 ```text
-Renew certificate +work +due:2026-09-30
+Renew certificate +work +due:2026-09-30 +inbox
 ```
 
 Quoting the whole first line works too: `tsk a 'Renew certificate +work +due:tomorrow'`.
@@ -200,6 +228,36 @@ Things to check:
 EOF_BODY
 ```
 
+## Capture, review, work, and wait
+
+New tasks enter `+inbox` unless an explicit workflow state is supplied. Capture
+stays one command; the task remains visible in the daily view until reviewed:
+
+```sh
+tsk a Investigate resolver +project:infra
+tsk inbox
+tsk t xbHi +next             # choose it as current work
+tsk t xbHi +wait:marco       # waiting on Marco; removes +next
+tsk t xbHi +backlog          # reviewed, deliberately deferred
+tsk t xbHi -+inbox           # remove inbox; keep it in the reviewed backlog
+```
+
+Adding `+inbox`, `+next`, `+backlog`, `+wait`, or `+wait:PERSON` replaces the other
+workflow states. It also reopens a completed task and clears its completion date.
+Project, owner, and ordinary tags are retained. Explicit conflicting states on
+creation are rejected. Existing files are not migrated: an older open task with
+none of these workflow tags belongs to the reviewed backlog, not to the inbox.
+
+```sh
+tsk inbox +work
+tsk next +project:ace
+tsk waiting --sort due
+tsk backlog
+```
+
+These views accept the same filters, list options, and piped selections as `tsk l`.
+`+due` remains a real deadline; inbox, focus, and waiting do not require one.
+
 ## Listing and filtering
 
 `tsk l` lists open tasks:
@@ -215,6 +273,8 @@ tsk l --all       # open and done
 tsk l --done      # done only
 ```
 
+List options can appear before or after filters. `--` ends option parsing.
+
 ### Exact tags
 
 ```sh
@@ -224,6 +284,15 @@ tsk l -+home
 ```
 
 `+work` means the exact tag `+work`; `-+work` excludes it.
+
+A trailing colon matches a whole namespace. These are equivalent pairs:
+
+```sh
+tsk l +owner:               # has any +owner:VALUE tag
+tsk l --has owner
+tsk l -+owner:              # has no +owner:VALUE tag
+tsk l --without owner
+```
 
 ### Literal text
 
@@ -248,6 +317,51 @@ tsk l -'~old|legacy'
 
 Literal matching is the default on purpose: punctuation in a task title should not accidentally become a regular expression.
 
+### Search Markdown notes
+
+`--body` includes the body in literal and regex searches. Tag filters still
+inspect only first-line tags, and an exact task ID still selects that task:
+
+```sh
+tsk l --body 'ACE-42'
+tsk l +work --body '~vpn|resolver'
+tsk l --body -legacy
+```
+
+### Grouping and ordering
+
+```sh
+tsk l +work --group-by project
+tsk l +project:ace --group-by owner --sort due
+tsk l --sort title
+tsk projects +work          # shortcut for --group-by project
+tsk team +project:ace       # shortcut for --group-by owner
+tsk unassigned              # open tasks without an owner
+```
+
+Each group shows a count and the selected task list. Missing values appear under
+`(unassigned)`. A task with multiple values is shown in each matching group;
+piping the grouped output into a mutation still selects that task only once.
+
+Sort fields are `id` (the default), `title` (case-insensitive), `due`, and
+`completed`. Dates sort earliest first with undated tasks last. IDs break ties.
+Counts describe task volume, rather than estimated effort or personal capacity.
+
+### Output for scripts
+
+```sh
+tsk l +work --ids
+tsk l --all --json > tasks.json
+tsk l +work --ids | tsk done --dry-run
+```
+
+`--ids` prints one full stable ID per line. `--json` prints a JSON array with
+`id`, `short_id`, `title`, `tags`, `done`, `due`, `completed`, and `body`. Tag
+names omit `+`; absent dates are `null`. The body preserves the text after the
+first-line newline, including leading/trailing blank lines. An empty selection
+exports `[]` or no IDs and succeeds. Both formats respect filtering and sorting.
+Grouping is a text presentation and cannot be combined with either format.
+
 ### IDs
 
 Normal output shows a short ID:
@@ -264,6 +378,46 @@ tsk done xbHi
 ```
 
 If a short suffix is not unique, `tsk` shows the full ID instead.
+
+## Tag catalogue
+
+Discover the tags in use and how many open tasks have each one:
+
+```sh
+tsk tags
+```
+
+The output is sorted alphabetically, with a tab between each tag and its count:
+
+```text
++owner:anna     2
++owner:luca     1
++project:ace    3
++work           4
+```
+
+Tags stay case-sensitive, so spelling variants remain visible. Counts represent
+tasks using a tag, rather than the number of times it appears in a file.
+
+Tags like `+project:ace` or `+owner:anna` are optional conventions. To list only
+values under a particular key, pass that key without `+` or `:`:
+
+```sh
+tsk tags project
+tsk tags --all project       # include completed tasks
+tsk tags --done              # completed tasks only
+tsk tags --names             # one +tag per line, without counts
+```
+
+A piped selection narrows the catalogue:
+
+```sh
+tsk l +work | tsk tags
+tsk l +work | tsk tags project
+```
+
+An empty archive or selection produces no output and succeeds. Catalogue options
+come before the optional key.
 
 ## Reviewing a subset
 
@@ -329,7 +483,26 @@ These commands also accept a task list on stdin:
 tsk l +obsolete | tsk done
 ```
 
-Completion is stored as the `+done` tag. Nothing is moved to a separate archive.
+Completion adds `+done` and `+completed:YYYY-MM-DD`, clearing inbox, focus,
+backlog, and waiting states. Repeated completion preserves the original date.
+Reopening removes the date and returns the task to the inbox. Nothing is moved
+to a separate archive. Legacy completed tasks without a date remain undated;
+running `done` again does not invent a completion date for them.
+
+### Completion reports
+
+```sh
+tsk report
+tsk report --group-by owner
+tsk report +project:ace --since 'last monday' --until today
+tsk report --all-time --group-by project
+```
+
+The default period is today and the preceding six calendar days. `--since` and
+`--until` are inclusive, accept GNU date expressions, and can also be used with
+`tsk l --done`. Reports sort by completion date. `--all-time` clears the date
+range and includes undated legacy completions. Reopened tasks are excluded: this
+is a report of currently completed work, not a full event history.
 
 ## Due dates
 
@@ -357,7 +530,18 @@ tsk l +release | tsk due friday
 
 ## Changing tags
 
-Tag changes deliberately require a task selection on stdin:
+Update one task by its exact full or displayed short ID:
+
+```sh
+tsk t xbHi +next -+wait
+tsk t xbHi +project:ace +owner:anna
+```
+
+The ID must identify exactly one task; titles and partial IDs are rejected. An
+explicit ID selects that task even when stdin is redirected. Completed tasks
+can be updated too.
+
+Omit the ID to update a task selection on stdin:
 
 ```sh
 tsk l vpn | tsk t +next
@@ -377,6 +561,24 @@ There is no legacy `-foo` removal syntax.
 All requested tag changes are validated before any task is updated. If a write
 fails during a bulk operation, the command stops with a nonzero exit status;
 earlier successful updates are retained.
+
+## Preview bulk changes
+
+Put `--dry-run` immediately after a mutation command. It validates the request
+and prints the action, count, and selected task list without changing task files:
+
+```sh
+tsk done --dry-run +project:ace
+tsk open --dry-run xbHi
+tsk due --dry-run friday +project:ace
+tsk t --dry-run xbHi +owner:anna
+tsk l +work --ids | tsk t --dry-run +next
+tsk l +discard | tsk d --dry-run
+```
+
+Removing `--dry-run` applies the same selection rules. As with other bulk
+operations, writes are atomic per file; an I/O failure stops the command and
+retains earlier successful updates.
 
 ## Deleting tasks
 
@@ -418,7 +620,7 @@ A healthy archive prints:
 ok: no problems found
 ```
 
-It checks titles, task IDs, tag syntax, duplicate tags, calendar dates, and
+It checks titles, task IDs, tag syntax, duplicate tags, deadline/completion dates, and
 unresolved Git conflict markers anywhere in task files. An empty archive is valid.
 
 ## Pipes are part of the interface
@@ -445,7 +647,9 @@ If `tsk` receives an unknown command, it looks for an executable named `tsk-COMM
 ```text
 tsk fzf  ->  tsk-fzf
 tsk git  ->  tsk-git
+tsk g    ->  tsk-git
 tsk y    ->  tsk-y
+tsk issue -> tsk-issue
 ```
 
 This is how optional features stay optional.
@@ -502,6 +706,13 @@ tsk git diff
 tsk git log --oneline
 ```
 
+`tsk g` is a shorter alias, with the same arguments and exit status:
+
+```sh
+tsk g status
+tsk g diff
+```
+
 It is essentially:
 
 ```sh
@@ -529,6 +740,76 @@ the sync before staging. Resolve and finish the Git operation with Git before
 running `tsk y` again. It is intentionally external because Git synchronization
 policy is not part of the task-manager core.
 
+### Issue links, browser, and imports
+
+Install `tsk-issue` alongside `tsk` using `just link`, or copy both executables to
+`PATH`. This extension requires Python 3 and uses the same task-directory lock.
+
+```sh
+tsk issue set xbHi ACE-42 https://jira.example.com/browse/ACE-42
+tsk issue set --dry-run xbHi ACE-42 https://jira.example.com/browse/ACE-42
+tsk browse xbHi
+tsk browse --print xbHi
+```
+
+Linking requires an exact ID, adds/replaces `+issue:KEY`, and records a primary
+Markdown link as `Issue: [KEY](<URL>)` in the notes. Replacing it preserves other
+notes and tags. `tsk browse` opens that link with `xdg-open`; `BROWSER` can specify
+another program with arguments. `--print` prints the URL without opening it.
+Links use HTTP(S) URLs.
+
+Import a selected JSON export, or restore a `tsk l --all --json` export:
+
+```sh
+tsk import tasks.json --dry-run
+tsk import tasks.json
+tsk import jira-issues.json --only-project ACE --only-open --owner anna
+tsk import gitlab-issues.json --source gitlab --tag work
+tsk import redmine-issues.json --base-url https://redmine.example.com --closed-status 5
+cat issues.json | tsk import -
+```
+
+Supported inputs are a JSON array, an object containing `issues` or `tasks`, or a
+single issue. `--source auto` detects tsk exports and common issue response fields
+from [Jira](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/),
+[GitLab](https://docs.gitlab.com/api/issues/), and
+[Redmine](https://www.redmine.org/projects/redmine/wiki/Rest_Issues).
+`--source` can select a format explicitly. Supply `--base-url` when the data lacks
+a browser URL, particularly for Redmine. Jira rich-text descriptions are flattened
+to readable notes. Redmine closed status IDs can be supplied with repeated
+`--closed-status`; an available `closed_on` date also identifies a completion.
+
+Provider project/assignee labels are normalized to ASCII tag values. `--project`
+and `--owner` override them; repeated `--tag` adds tags. `--only-project` filters
+the resulting project tag and `--only-open` excludes completed issues. Existing
+issue URLs and task IDs are skipped, preserving local edits. Duplicate records
+in one input are skipped too. Imports add files without updating remote services.
+The complete input is validated before writing, and `--dry-run` changes no files.
+An I/O error can retain earlier successfully imported tasks.
+
+A provider-independent import can use this shape:
+
+```json
+[
+  {
+    "title": "Review API mapping",
+    "key": "ACE-42",
+    "url": "https://issues.example.com/ACE-42",
+    "project": "ace",
+    "owner": "anna",
+    "tags": ["work"],
+    "body": "Markdown notes",
+    "due": "2026-12-01",
+    "done": false
+  }
+]
+```
+
+`key` and `url` are optional together. Tags omit `+`. Closed imports may include
+an ISO `completed` date; missing completion dates remain unknown. Open imports
+enter the inbox unless they carry a workflow state. Restoring a tsk JSON export
+preserves full IDs, tag order, and the body. Import never overwrites an existing ID.
+
 ## Environment
 
 The core understands only two user-facing environment variables:
@@ -547,15 +828,24 @@ tsk                         daily view
 tsk r [FILTERS...]          review a filtered/piped selection
 tsk a TITLE [TAGS...]       add task
 tsk l [OPTIONS] [FILTERS]   list tasks
+tsk inbox|next|backlog      workflow views
+tsk waiting|unassigned     waiting tasks or tasks without an owner
+tsk projects|team          group tasks by project or owner
+tsk report [OPTIONS]       completions from the last seven days
+tsk tags [OPTIONS] [KEY]    list tags and task counts; optionally KEY: tags
 tsk s FILTERS...            cat task file(s) unchanged
 tsk e [FILTERS...]          edit one task; latest when omitted
 tsk done FILTERS...         complete tasks
 tsk open FILTERS...         reopen tasks
 tsk due DATE FILTERS...     set deadline; '-' removes it
-tsk t CHANGES...            modify tags on tasks from stdin
+tsk t [ID] CHANGES...       modify tags on one ID or tasks from stdin
 tsk d FILTERS...            delete tasks
 tsk dir                     print task directory
 tsk check                   validate task files
+tsk g [ARGS...]             alias for tsk git
+tsk issue set ID KEY URL   associate an issue
+tsk browse [--print] ID    open or print the associated issue URL
+tsk import FILE [OPTIONS] import JSON tasks/issues; '-' reads stdin
 tsk h                       help
 ```
 
@@ -564,6 +854,24 @@ List options:
 ```text
 --all                       include completed tasks
 --done                      only completed tasks
+--group-by KEY              group by a tag namespace (text output)
+--sort FIELD                id, title, due, or completed
+--body                      search Markdown notes as well as the first line
+--has KEY                   require a namespace such as owner
+--without KEY               exclude a namespace
+--ids                       one full stable ID per line
+--json                      structured task data and Markdown bodies
+--since DATE                completions on or after DATE
+--until DATE                completions on or before DATE
+--all-time                  clear the completion date range
+```
+
+Tag catalogue options:
+
+```text
+--all                       count open and completed tasks
+--done                      count completed tasks only
+--names                     print tag names without counts
 ```
 
 Filters:
@@ -571,6 +879,8 @@ Filters:
 ```text
 +foo                        exact tag
 -+foo                       exclude exact tag
++key:                       require any tag under key
+-+key:                      exclude any tag under key
 text                        case-insensitive literal text
 -text                       exclude literal text
 ~REGEX                      case-insensitive regex
@@ -581,7 +891,8 @@ ID                          full or displayed short task ID
 ## Testing
 
 The repository contains black-box tests for the core and extensions. Running the
-tests requires Python 3 and Git in addition to the runtime dependencies:
+tests requires Python 3, Git, and Bash 4 or newer in addition to the runtime
+dependencies:
 
 ```sh
 just test
@@ -596,6 +907,7 @@ or directly:
 The tests exercise the CLI, including failed writes, concurrent updates, editor
 terminal handling, and Git synchronization against temporary local repositories.
 They leave the user's task archive untouched. CI runs them before mirroring.
+Completion tests also exercise Tab insertion in an interactive Bash terminal.
 
 ## Design philosophy
 
@@ -607,6 +919,8 @@ Metadata   = +tags on the first line
 Done       = +done
 Focus      = +next
 Deadline   = +due:YYYY-MM-DD
+Workflow   = +inbox, +next, +backlog, +wait[:PERSON], +done
+Completed  = +completed:YYYY-MM-DD
 Selection  = filters and pipes
 Editor     = $EDITOR
 Extensions = tsk-* executables
